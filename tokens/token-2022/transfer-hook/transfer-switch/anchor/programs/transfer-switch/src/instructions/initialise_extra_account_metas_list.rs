@@ -4,9 +4,7 @@ use {
         system_program::{create_account, CreateAccount},
     },
     anchor_spl::token_interface::Mint,
-    spl_tlv_account_resolution::{
-        account::ExtraAccountMeta, seeds::Seed, state::ExtraAccountMetaList,
-    },
+    spl_tlv_account_resolution::{account::ExtraAccountMeta, seeds::Seed, state::ExtraAccountMetaList},
     spl_transfer_hook_interface::instruction::ExecuteInstruction,
 };
 
@@ -30,21 +28,20 @@ pub struct InitializeExtraAccountMetas<'info> {
 }
 
 impl<'info> InitializeExtraAccountMetas<'info> {
-    pub fn initialize_extra_account_metas_list(
-        &self,
-        bumps: InitializeExtraAccountMetasBumps,
-    ) -> Result<()> {
+    pub fn initialize_extra_account_metas_list(&self, bumps: InitializeExtraAccountMetasBumps) -> Result<()> {
         // .map_err() needed because spl-tlv-account-resolution uses solana-program-error 2.x
         // while anchor-lang 1.0 uses 3.x — structurally identical but different semver types
         let account_metas = vec![
-            // 5 - wallet (sender) config account
+            // 5 - sender (source token account owner) switch account
             ExtraAccountMeta::new_with_seeds(
                 &[
-                    Seed::AccountKey { index: 3 }, // sender index
+                    // owner field of the source token account; index 3 may be a delegate
+                    Seed::AccountData { account_index: 0, data_index: 32, length: 32 },
                 ],
                 false, // is_signer
                 false, // is_writable
-            ).map_err(|_| ProgramError::InvalidArgument)?,
+            )
+            .map_err(|_| ProgramError::InvalidArgument)?,
         ];
 
         // calculate account size
@@ -55,11 +52,7 @@ impl<'info> InitializeExtraAccountMetas<'info> {
         let lamports = Rent::get()?.minimum_balance(account_size as usize);
 
         let mint = self.token_mint.key();
-        let signer_seeds: &[&[&[u8]]] = &[&[
-            b"extra-account-metas",
-            mint.as_ref(),
-            &[bumps.extra_account_metas_list],
-        ]];
+        let signer_seeds: &[&[&[u8]]] = &[&[b"extra-account-metas", mint.as_ref(), &[bumps.extra_account_metas_list]]];
 
         create_account(
             CpiContext::new(
@@ -79,7 +72,8 @@ impl<'info> InitializeExtraAccountMetas<'info> {
         ExtraAccountMetaList::init::<ExecuteInstruction>(
             &mut self.extra_account_metas_list.try_borrow_mut_data()?,
             &account_metas,
-        ).map_err(|_| ProgramError::InvalidAccountData)?;
+        )
+        .map_err(|_| ProgramError::InvalidAccountData)?;
 
         Ok(())
     }

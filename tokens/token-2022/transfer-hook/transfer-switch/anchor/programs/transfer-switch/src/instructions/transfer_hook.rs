@@ -3,21 +3,18 @@ use {
     anchor_lang::prelude::*,
     anchor_spl::{
         token_2022::spl_token_2022::{
-            extension::{
-                transfer_hook::TransferHookAccount, BaseStateWithExtensionsMut,
-                PodStateWithExtensionsMut,
-            },
+            extension::{transfer_hook::TransferHookAccount, BaseStateWithExtensionsMut, PodStateWithExtensionsMut},
             pod::PodAccount,
         },
-        token_interface::Mint,
+        token_interface::{Mint, TokenAccount},
     },
 };
 
 #[derive(Accounts)]
 pub struct TransferHook<'info> {
-    /// CHECK: Sender token account
+    /// Sender token account
     #[account()]
-    pub source_token_account: UncheckedAccount<'info>,
+    pub source_token_account: InterfaceAccount<'info, TokenAccount>,
 
     /// The mint of the token transferring
     #[account()]
@@ -27,7 +24,7 @@ pub struct TransferHook<'info> {
     #[account()]
     pub receiver_token_account: UncheckedAccount<'info>,
 
-    /// CHECK: the transfer sender
+    /// CHECK: the transfer authority (owner or delegate)
     #[account()]
     pub wallet: UncheckedAccount<'info>,
 
@@ -38,9 +35,9 @@ pub struct TransferHook<'info> {
     )]
     pub extra_account_metas_list: UncheckedAccount<'info>,
 
-    /// sender transfer switch
+    /// sender transfer switch, keyed by the source token account owner
     #[account(
-        seeds=[wallet.key().as_ref()],
+        seeds=[source_token_account.owner.as_ref()],
         bump,
     )]
     pub wallet_switch: Account<'info, TransferSwitch>,
@@ -61,8 +58,8 @@ impl<'info> TransferHook<'info> {
         // while anchor-lang 1.0 uses 3.x — structurally identical but different semver types
         let mut account = PodStateWithExtensionsMut::<PodAccount>::unpack(*account_data_ref)
             .map_err(|_| ProgramError::InvalidAccountData)?;
-        let account_extension = account.get_extension_mut::<TransferHookAccount>()
-            .map_err(|_| ProgramError::InvalidAccountData)?;
+        let account_extension =
+            account.get_extension_mut::<TransferHookAccount>().map_err(|_| ProgramError::InvalidAccountData)?;
 
         if !bool::from(account_extension.transferring) {
             return err!(TransferError::IsNotCurrentlyTransferring);
