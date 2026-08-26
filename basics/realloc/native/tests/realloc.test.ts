@@ -10,6 +10,7 @@ import {
     setTransactionMessageFeePayerSigner,
     signTransactionMessageWithSigners,
 } from '@solana/kit';
+import { getTransferSolInstruction } from '@solana-program/system';
 import { assert } from 'chai';
 import { FailedTransactionMetadata, LiteSVM } from 'litesvm';
 import {
@@ -20,6 +21,11 @@ import {
     enhancedAddressInfoDecoder,
     workInfoDecoder,
 } from '../ts';
+
+// Serialized `EnhancedAddressInfo` for the values used below (borsh: 4-byte length-prefixed strings).
+const enhancedAddressInfoLength = 4 + 5 + 1 + 4 + 8 + 4 + 7 + 4 + 8 + 4;
+// LiteSVM's default fee for a single-signature transaction.
+const TRANSACTION_FEE = 5_000n;
 
 describe('Realloc!', () => {
     const svm = new LiteSVM();
@@ -78,6 +84,52 @@ describe('Realloc!', () => {
         await sendTransaction(ix);
 
         printWorkInfo(testAccount.address);
+    });
+
+    it('Reallocate WITHOUT zero init when the account already holds more than the new rent-exempt minimum', async () => {
+        const overfundedAccount = await generateKeyPairSigner();
+        await sendTransaction(
+            createCreateInstruction(overfundedAccount, payer, programId, 'Jacob', 123, 'Main St.', 'Chicago'),
+        );
+
+        // Anyone can push the account above the enlarged rent-exempt minimum with a plain system transfer.
+        const enlargedMinimum = svm.minimumBalanceForRentExemption(BigInt(enhancedAddressInfoLength));
+        await sendTransaction(
+            getTransferSolInstruction({
+                amount: lamports(enlargedMinimum),
+                destination: overfundedAccount.address,
+                source: payer,
+            }),
+        );
+
+        const targetLamportsBefore = svm.getBalance(overfundedAccount.address);
+        const payerLamportsBefore = svm.getBalance(payer.address);
+        assert(targetLamportsBefore !== null && payerLamportsBefore !== null);
+        assert(targetLamportsBefore > enlargedMinimum);
+
+        const ix = createReallocateWithoutZeroInitInstruction(
+            overfundedAccount.address,
+            payer,
+            programId,
+            'Illinois',
+            12345,
+        );
+        await sendTransaction(ix);
+
+        const account = svm.getAccount(overfundedAccount.address);
+        assert(account.exists, 'test account not found');
+        assert.strictEqual(account.data.length, enhancedAddressInfoLength);
+        const enhancedAddressInfo = enhancedAddressInfoDecoder.decode(account.data);
+        assert.strictEqual(enhancedAddressInfo.name, 'Jacob');
+        assert.strictEqual(enhancedAddressInfo.house_number, 123);
+        assert.strictEqual(enhancedAddressInfo.street, 'Main St.');
+        assert.strictEqual(enhancedAddressInfo.city, 'Chicago');
+        assert.strictEqual(enhancedAddressInfo.state, 'Illinois');
+        assert.strictEqual(enhancedAddressInfo.zip, 12345);
+
+        // No top-up was needed: the target keeps its balance and the payer only pays the transaction fee.
+        assert.strictEqual(svm.getBalance(overfundedAccount.address), targetLamportsBefore);
+        assert.strictEqual(payerLamportsBefore - svm.getBalance(payer.address)!, TRANSACTION_FEE);
     });
 
     function printAddressInfo(address: Address): void {
