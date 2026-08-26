@@ -1,16 +1,10 @@
 use anchor_lang::prelude::*;
 use anchor_spl::{
-    associated_token::AssociatedToken, 
-    token::{
-        Mint, 
-        Token, 
-        TokenAccount
-    }
+    associated_token::AssociatedToken,
+    token::{Mint, Token, TokenAccount},
 };
 
-use crate::{
-    state::Fundraiser, FundraiserError, ANCHOR_DISCRIMINATOR, MIN_AMOUNT_TO_RAISE
-};
+use crate::{state::Fundraiser, FundraiserError, ANCHOR_DISCRIMINATOR, MIN_AMOUNT_TO_RAISE};
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
@@ -39,12 +33,12 @@ pub struct Initialize<'info> {
 
 impl<'info> Initialize<'info> {
     pub fn initialize(&mut self, amount: u64, duration: u16, bumps: &InitializeBumps) -> Result<()> {
-
         // Check if the amount to raise meets the minimum amount required
-        require!(
-            amount >= MIN_AMOUNT_TO_RAISE.pow(self.mint_to_raise.decimals as u32),
-            FundraiserError::InvalidAmount
-        );
+        let min_amount = 10u64
+            .checked_pow(self.mint_to_raise.decimals as u32)
+            .and_then(|one_token| one_token.checked_mul(MIN_AMOUNT_TO_RAISE))
+            .ok_or(FundraiserError::DecimalsOverflow)?;
+        require!(amount >= min_amount, FundraiserError::InvalidAmount);
 
         // Initialize the fundraiser account
         self.fundraiser.set_inner(Fundraiser {
@@ -54,9 +48,9 @@ impl<'info> Initialize<'info> {
             current_amount: 0,
             time_started: Clock::get()?.unix_timestamp,
             duration,
-            bump: bumps.fundraiser
+            bump: bumps.fundraiser,
         });
-        
+
         Ok(())
     }
 }
