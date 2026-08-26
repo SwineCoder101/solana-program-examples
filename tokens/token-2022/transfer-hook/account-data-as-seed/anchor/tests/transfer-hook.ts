@@ -211,6 +211,7 @@ describe('transfer-hook', () => {
             );
             await sendAndConfirmTransaction(connection, new Transaction().add(transferIx), [wallet.payer], {
                 skipPreflight: true,
+                commitment: 'confirmed',
             });
             transfersByWallet += 1;
         }

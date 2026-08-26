@@ -5,23 +5,16 @@ use anchor_spl::{
     associated_token::AssociatedToken,
     token_2022::{
         spl_token_2022::{
-            extension::{
-                transfer_hook::TransferHookAccount, BaseStateWithExtensionsMut,
-                PodStateWithExtensionsMut,
-            },
+            extension::{transfer_hook::TransferHookAccount, BaseStateWithExtensionsMut, PodStateWithExtensionsMut},
             pod::PodAccount,
         },
         Token2022,
     },
     token_interface::{Mint, TokenAccount},
 };
-use spl_tlv_account_resolution::{
-    account::ExtraAccountMeta, seeds::Seed, state::ExtraAccountMetaList,
-};
 use spl_discriminator::SplDiscriminate;
-use spl_transfer_hook_interface::instruction::{
-    ExecuteInstruction, InitializeExtraAccountMetaListInstruction,
-};
+use spl_tlv_account_resolution::{account::ExtraAccountMeta, seeds::Seed, state::ExtraAccountMetaList};
+use spl_transfer_hook_interface::instruction::{ExecuteInstruction, InitializeExtraAccountMetaListInstruction};
 
 declare_id!("1qahDxKHeCLZhbBU2NyMU6vQCQmEUmdeSEBrG5drffK");
 
@@ -38,9 +31,7 @@ pub mod transfer_hook {
     use super::*;
 
     #[instruction(discriminator = InitializeExtraAccountMetaListInstruction::SPL_DISCRIMINATOR_SLICE)]
-    pub fn initialize_extra_account_meta_list(
-        ctx: Context<InitializeExtraAccountMetaList>,
-    ) -> Result<()> {
+    pub fn initialize_extra_account_meta_list(ctx: Context<InitializeExtraAccountMetaList>) -> Result<()> {
         let extra_account_metas = InitializeExtraAccountMetaList::extra_account_metas()?;
 
         // initialize ExtraAccountMetaList account with extra accounts
@@ -49,7 +40,8 @@ pub mod transfer_hook {
         ExtraAccountMetaList::init::<ExecuteInstruction>(
             &mut ctx.accounts.extra_account_meta_list.try_borrow_mut_data()?,
             &extra_account_metas,
-        ).map_err(|_| ProgramError::InvalidAccountData)?;
+        )
+        .map_err(|_| ProgramError::InvalidAccountData)?;
 
         Ok(())
     }
@@ -66,14 +58,10 @@ pub mod transfer_hook {
         }
 
         // Increment the transfer count safely
-        let count = ctx
-            .accounts
-            .counter_account
-            .counter
-            .checked_add(1)
-            .ok_or(TransferError::AmountTooBig)?;
+        let counter_account = &mut ctx.accounts.counter_account;
+        counter_account.counter = counter_account.counter.checked_add(1).ok_or(TransferError::AmountTooBig)?;
 
-        msg!("This token has been transferred {} times", count);
+        msg!("This token has been transferred {} times", counter_account.counter);
 
         Ok(())
     }
@@ -86,8 +74,8 @@ fn check_is_transferring(ctx: &Context<TransferHook>) -> Result<()> {
     // while anchor-lang 1.0 uses 3.x — structurally identical but different semver types
     let mut account = PodStateWithExtensionsMut::<PodAccount>::unpack(*account_data_ref)
         .map_err(|_| ProgramError::InvalidAccountData)?;
-    let account_extension = account.get_extension_mut::<TransferHookAccount>()
-        .map_err(|_| ProgramError::InvalidAccountData)?;
+    let account_extension =
+        account.get_extension_mut::<TransferHookAccount>().map_err(|_| ProgramError::InvalidAccountData)?;
 
     if !bool::from(account_extension.transferring) {
         return err!(TransferError::IsNotCurrentlyTransferring);
@@ -128,18 +116,13 @@ impl<'info> InitializeExtraAccountMetaList<'info> {
         // while anchor-lang 1.0 uses 3.x — structurally identical but different semver types
         Ok(vec![ExtraAccountMeta::new_with_seeds(
             &[
-                Seed::Literal {
-                    bytes: b"counter".to_vec(),
-                },
-                Seed::AccountData {
-                    account_index: 0,
-                    data_index: 32,
-                    length: 32,
-                },
+                Seed::Literal { bytes: b"counter".to_vec() },
+                Seed::AccountData { account_index: 0, data_index: 32, length: 32 },
             ],
             false, // is_signer
             true,  // is_writable
-        ).map_err(|_| ProgramError::InvalidArgument)?])
+        )
+        .map_err(|_| ProgramError::InvalidArgument)?])
     }
 
     /// Returns the count of extra account metas (avoids the error conversion issue in #[account] attributes)
@@ -164,7 +147,7 @@ pub struct TransferHook<'info> {
     /// CHECK: ExtraAccountMetaList Account,
     #[account(seeds = [b"extra-account-metas", mint.key().as_ref()], bump)]
     pub extra_account_meta_list: UncheckedAccount<'info>,
-    #[account(seeds = [b"counter", owner.key().as_ref()], bump)]
+    #[account(mut, seeds = [b"counter", owner.key().as_ref()], bump)]
     pub counter_account: Account<'info, CounterAccount>,
 }
 
