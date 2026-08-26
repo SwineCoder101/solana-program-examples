@@ -10,11 +10,7 @@ use crate::{
     state::Pool,
 };
 
-pub fn deposit_liquidity(
-    ctx: Context<DepositLiquidity>,
-    amount_a: u64,
-    amount_b: u64,
-) -> Result<()> {
+pub fn deposit_liquidity(ctx: Context<DepositLiquidity>, amount_a: u64, amount_b: u64) -> Result<()> {
     // Prevent depositing assets the depositor does not own
     let mut amount_a = if amount_a > ctx.accounts.depositor_account_a.amount {
         ctx.accounts.depositor_account_a.amount
@@ -30,12 +26,18 @@ pub fn deposit_liquidity(
     // Making sure they are provided in the same proportion as existing liquidity
     let pool_a = &ctx.accounts.pool_account_a;
     let pool_b = &ctx.accounts.pool_account_b;
-    // Defining pool creation like this allows attackers to frontrun pool creation with bad ratios
-    let pool_creation = pool_a.amount == 0 && pool_b.amount == 0;
+    // Keyed on LP supply rather than reserves so tokens sent directly to the
+    // pool accounts cannot force the ratio path (and a division by zero).
+    let lp_supply = ctx.accounts.mint_liquidity.supply;
+    let pool_creation = lp_supply == 0;
     (amount_a, amount_b) = if pool_creation {
         // Add as is if there is no liquidity
         (amount_a, amount_b)
     } else {
+        if pool_a.amount == 0 || pool_b.amount == 0 {
+            return err!(TutorialError::EmptyPoolReserves);
+        }
+
         // u128 is enough precision here
         let amount_a_u128 = amount_a as u128;
         let amount_b_u128 = amount_b as u128;
@@ -45,9 +47,9 @@ pub fn deposit_liquidity(
         // Calculate the amount of B required if we deposit all of A provided
         let amount_b_required = amount_a_u128
             .checked_mul(pool_b_u128)
-            .unwrap()
+            .ok_or(TutorialError::MathOverflow)?
             .checked_div(pool_a_u128)
-            .unwrap();
+            .ok_or(TutorialError::MathOverflow)?;
 
         if amount_b_required <= amount_b_u128 {
             // We have enough B to match the A provided
@@ -56,28 +58,49 @@ pub fn deposit_liquidity(
             // We don't have enough B, so we must limit by B and calculate A required
             let amount_a_required = amount_b_u128
                 .checked_mul(pool_a_u128)
-                .unwrap()
+                .ok_or(TutorialError::MathOverflow)?
                 .checked_div(pool_b_u128)
-                .unwrap();
+                .ok_or(TutorialError::MathOverflow)?;
             (amount_a_required as u64, amount_b)
         }
     };
 
     // Computing the amount of liquidity about to be deposited.
-    // Multiply in u128 so the product of two u64 amounts cannot overflow.
-    let mut liquidity = (amount_a as u128)
-        .checked_mul(amount_b as u128)
-        .unwrap()
-        .isqrt() as u64;
+    let liquidity = if pool_creation {
+        // Multiply in u128 so the product of two u64 amounts cannot overflow.
+        let liquidity =
+            (amount_a as u128).checked_mul(amount_b as u128).ok_or(TutorialError::MathOverflow)?.isqrt() as u64;
 
-    // Lock some minimum liquidity on the first deposit
-    if pool_creation {
+        // Lock some minimum liquidity on the first deposit
         if liquidity < MINIMUM_LIQUIDITY {
             return err!(TutorialError::DepositTooSmall);
         }
 
-        liquidity -= MINIMUM_LIQUIDITY;
-    }
+        liquidity - MINIMUM_LIQUIDITY
+    } else {
+        // Pro-rata share of the existing supply, so fees accrued to the
+        // reserves stay with the LPs who earned them. The locked minimum
+        // liquidity is part of the supply, matching withdraw_liquidity.
+        let total_liquidity =
+            (lp_supply as u128).checked_add(MINIMUM_LIQUIDITY as u128).ok_or(TutorialError::MathOverflow)?;
+        let liquidity_a = (amount_a as u128)
+            .checked_mul(total_liquidity)
+            .ok_or(TutorialError::MathOverflow)?
+            .checked_div(pool_a.amount as u128)
+            .ok_or(TutorialError::MathOverflow)?;
+        let liquidity_b = (amount_b as u128)
+            .checked_mul(total_liquidity)
+            .ok_or(TutorialError::MathOverflow)?
+            .checked_div(pool_b.amount as u128)
+            .ok_or(TutorialError::MathOverflow)?;
+        let liquidity = u64::try_from(liquidity_a.min(liquidity_b)).map_err(|_| TutorialError::MathOverflow)?;
+
+        if liquidity == 0 {
+            return err!(TutorialError::DepositTooSmall);
+        }
+
+        liquidity
+    };
 
     // Transfer tokens to the pool
     token::transfer(
