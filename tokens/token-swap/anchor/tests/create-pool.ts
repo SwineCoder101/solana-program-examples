@@ -1,8 +1,9 @@
 import type { Program } from '@anchor-lang/core';
 import * as anchor from '@anchor-lang/core';
 import { PublicKey } from '@solana/web3.js';
+import { expect } from 'chai';
 import type { SwapExample } from '../target/types/swap_example';
-import { createValues, expectRevert, mintingTokens, type TestValues } from './utils';
+import { createValues, expectAnchorError, expectRevert, mintingTokens, type TestValues } from './utils';
 
 describe('Create pool', () => {
     const provider = anchor.AnchorProvider.env();
@@ -82,5 +83,31 @@ describe('Create pool', () => {
                 })
                 .rpc(),
         );
+    });
+
+    it('Rejects mints out of order', async () => {
+        const swapped = createValues({
+            id: values.id,
+            mintAKeypair: values.mintBKeypair,
+            mintBKeypair: values.mintAKeypair,
+        });
+
+        await expectAnchorError(
+            program.methods
+                .createPool()
+                .accountsPartial({
+                    amm: swapped.ammKey,
+                    pool: swapped.poolKey,
+                    poolAuthority: swapped.poolAuthority,
+                    mintLiquidity: swapped.mintLiquidity,
+                    mintA: swapped.mintAKeypair.publicKey,
+                    mintB: swapped.mintBKeypair.publicKey,
+                    poolAccountA: swapped.poolAccountA,
+                    poolAccountB: swapped.poolAccountB,
+                })
+                .rpc(),
+            'InvalidMint',
+        );
+        expect(await connection.getAccountInfo(swapped.poolKey)).to.be.null;
     });
 });
