@@ -27,3 +27,26 @@ impl GameData {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_counting_below_max() {
+        let mut game = GameData {
+            total_wood_collected: 0,
+        };
+        game.on_tree_chopped(1).unwrap();
+        assert_eq!(game.total_wood_collected, 1);
+    }
+
+    #[test]
+    fn resets_when_total_reaches_max() {
+        let mut game = GameData {
+            total_wood_collected: MAX_WOOD_PER_TREE - 1,
+        };
+        game.on_tree_chopped(1).unwrap();
+        assert_eq!(game.total_wood_collected, 0);
+    }
+}
