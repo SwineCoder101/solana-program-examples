@@ -9,6 +9,9 @@ use solana_transaction_error::TransactionError;
 
 use close_account_pinocchio_program::{User, CLOSE_DISCRIMINATOR, CREATE_DISCRIMINATOR};
 
+// LiteSVM's default fee for a single-signature transaction.
+const TX_FEE: u64 = 5000;
+
 #[test]
 fn test_close_account() {
     let mut svm = LiteSVM::new();
@@ -34,6 +37,7 @@ fn test_close_account() {
     let name_len = b"Jacob".len().min(User::LEN);
     name[..name_len].copy_from_slice(&b"Jacob"[..name_len]);
     data.extend_from_slice(&name);
+    let create_data = data.clone();
 
     let ix = Instruction {
         program_id,
@@ -90,7 +94,29 @@ fn test_close_account() {
         "expected the attacker's target PDA to be rejected as not belonging to them"
     );
 
+    // process_close with a bogus system program account
+    let bogus_program = Pubkey::new_unique();
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(test_account_pubkey, false),
+            AccountMeta::new(payer.pubkey(), true),
+            AccountMeta::new(bogus_program, false),
+        ],
+        data: vec![CLOSE_DISCRIMINATOR],
+    };
+
+    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer.pubkey()), &[&payer], svm.latest_blockhash());
+
+    let err = svm.send_transaction(tx).expect_err("expected the bogus system program to be rejected").err;
+    assert_eq!(err, TransactionError::InstructionError(0, InstructionError::IncorrectProgramId));
+    assert_eq!(svm.get_account(&test_account_pubkey).unwrap().owner, program_id);
+
     // process_close
+    let payer_balance_before = svm.get_balance(&payer.pubkey()).unwrap();
+    let account_balance_before = svm.get_balance(&test_account_pubkey).unwrap();
+    assert!(account_balance_before > 0);
+
     let mut data = Vec::new();
     data.push(CLOSE_DISCRIMINATOR);
 
@@ -109,7 +135,29 @@ fn test_close_account() {
     let res = svm.send_transaction(tx);
     assert!(res.is_ok());
 
+    // Closing drains every lamport back to the payer and deletes the account.
+    assert!(svm.get_account(&test_account_pubkey).is_none(), "expected the closed account to no longer exist");
+    assert_eq!(svm.get_balance(&payer.pubkey()).unwrap(), payer_balance_before + account_balance_before - TX_FEE);
+
+    // process_user again after closing
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(test_account_pubkey, false),
+            AccountMeta::new(payer.pubkey(), true),
+            AccountMeta::new(solana_system_interface::program::ID, false),
+        ],
+        data: create_data,
+    };
+
+    svm.expire_blockhash();
+    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer.pubkey()), &[&payer], svm.latest_blockhash());
+
+    let res = svm.send_transaction(tx);
+    assert!(res.is_ok(), "expected the account to be re-creatable after closing: {res:?}");
+
     let account = svm.get_account(&test_account_pubkey).unwrap();
-    assert_eq!(account.data.len(), 0);
-    assert_eq!(account.owner, solana_system_interface::program::ID);
+    assert_eq!(account.data.len(), User::LEN);
+    assert_eq!(account.owner, program_id);
+    assert_eq!(&account.data[..5], b"Jacob");
 }
