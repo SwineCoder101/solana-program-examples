@@ -70,6 +70,9 @@ describe('transfer-hook', () => {
         program.programId,
     );
 
+    // Number of transfers sent from the wallet's token account; the counter PDA must track it.
+    let transfersByWallet = 0;
+
     it('Create Mint Account with Transfer Hook Extension', async () => {
         const extensions = [ExtensionType.TransferHook];
         const mintLen = getMintLen(extensions);
@@ -188,6 +191,33 @@ describe('transfer-hook', () => {
 
         const txSig = await sendAndConfirmTransaction(connection, transaction, [wallet.payer], { skipPreflight: true });
         console.log('Transfer Signature:', txSig);
+        transfersByWallet += 1;
+    });
+
+    it('Counter PDA records every transfer made by the source owner', async () => {
+        // Distinct amounts so each transfer is a distinct transaction even under the same blockhash.
+        for (const amount of [2, 3]) {
+            const transferIx = await createTransferCheckedWithTransferHookInstruction(
+                connection,
+                sourceTokenAccount,
+                mint.publicKey,
+                destinationTokenAccount,
+                wallet.publicKey,
+                BigInt(amount * 10 ** decimals),
+                decimals,
+                [],
+                'confirmed',
+                TOKEN_2022_PROGRAM_ID,
+            );
+            await sendAndConfirmTransaction(connection, new Transaction().add(transferIx), [wallet.payer], {
+                skipPreflight: true,
+            });
+            transfersByWallet += 1;
+        }
+
+        const counterAccount = await program.account.counterAccount.fetch(counterPDA, 'confirmed');
+        expect(transfersByWallet).to.equal(3);
+        expect(counterAccount.counter.toNumber()).to.equal(transfersByWallet);
     });
 
     it('Try call transfer hook without transfer', async () => {
