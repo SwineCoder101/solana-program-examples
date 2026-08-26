@@ -131,6 +131,9 @@ describe('PDA Rent-Payer', () => {
         assert(!(result instanceof FailedTransactionMetadata), `transaction failed: ${result.toString()}`);
 
         assert.equal(balance(rentVaultPda), rentExemptBalance + FUND_LAMPORTS);
+        const vault = svm.getAccount(rentVaultPda);
+        assert(vault.exists, 'rent vault was not created');
+        assert.equal(vault.programAddress, SYSTEM_PROGRAM_ADDRESS);
     });
 
     it('Create a new account using the Rent Vault', async () => {

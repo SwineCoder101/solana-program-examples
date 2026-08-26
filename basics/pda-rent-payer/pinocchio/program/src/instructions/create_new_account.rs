@@ -1,8 +1,10 @@
 use pinocchio::{
+    cpi::{Seed, Signer},
     error::ProgramError,
     sysvars::{rent::Rent, Sysvar},
     AccountView, Address, ProgramResult,
 };
+use pinocchio_system::instructions::CreateAccount;
 
 use crate::state::RentVault;
 
@@ -15,19 +17,38 @@ pub fn create_new_account(
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    let bump = instruction_data[0];
+    if !new_account.is_signer() {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
 
-    let rent_vault_pda = Address::create_program_address(&[RentVault::SEED_PREFIX.as_bytes(), &[bump]], program_id)
-        .map_err(|_| ProgramError::InvalidSeeds)?;
+    let bump = *instruction_data.first().ok_or(ProgramError::InvalidInstructionData)?;
 
-    assert!(rent_vault.address().eq(&rent_vault_pda));
+    // Only the canonical bump is accepted, so a client cannot point at an alternate vault PDA.
+    let (rent_vault_pda, canonical_bump) =
+        Address::find_program_address(&[RentVault::SEED_PREFIX.as_bytes()], program_id);
+    if bump != canonical_bump || rent_vault.address() != &rent_vault_pda {
+        return Err(ProgramError::InvalidSeeds);
+    }
 
     // Assuming this account has no inner data (size 0)
     //
     let lamports_required_for_rent = (Rent::get()?).try_minimum_balance(0)?;
 
-    rent_vault.set_lamports(rent_vault.lamports() - lamports_required_for_rent);
-    new_account.set_lamports(new_account.lamports() + lamports_required_for_rent);
+    let bump_bytes = bump.to_le_bytes();
+
+    let seeds = [Seed::from(RentVault::SEED_PREFIX.as_bytes()), Seed::from(&bump_bytes)];
+
+    let signer_seed = Signer::from(&seeds);
+
+    // Create the new account, transferring lamports from the rent vault to the new account
+    CreateAccount {
+        from: rent_vault,
+        to: new_account,
+        lamports: lamports_required_for_rent,
+        space: 0,
+        owner: &pinocchio_system::ID,
+    }
+    .invoke_signed(&[signer_seed])?;
 
     Ok(())
 }

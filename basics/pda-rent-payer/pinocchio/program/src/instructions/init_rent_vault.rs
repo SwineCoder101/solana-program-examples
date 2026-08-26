@@ -36,7 +36,7 @@ pub fn init_rent_vault(program_id: &Address, accounts: &mut [AccountView], instr
 
     let signer_seed = Signer::from(&seeds);
 
-    CreateAccount { from: payer, to: rent_vault, lamports: lamports_required, space: 0, owner: program_id }
+    CreateAccount { from: payer, to: rent_vault, lamports: lamports_required, space: 0, owner: &pinocchio_system::ID }
         .invoke_signed(&[signer_seed])?;
 
     Ok(())
