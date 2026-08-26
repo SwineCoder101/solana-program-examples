@@ -10,4 +10,6 @@ pub enum GameErrorCode {
     InvalidMintAccountSpace,
     #[msg("Cant initialize metadata_pointer")]
     CantInitializeMetadataPointer,
+    #[msg("Player does not own this NFT")]
+    NftNotOwned,
 }

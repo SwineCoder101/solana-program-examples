@@ -2,6 +2,7 @@ import { Button, HStack, VStack } from '@chakra-ui/react';
 import { useSessionWallet } from '@magicblock-labs/gum-react-sdk';
 import { useKitTransactionSigner } from '@solana/connector/react';
 import { createNoopSigner, type Address } from '@solana/kit';
+import { findAssociatedTokenPda, TOKEN_2022_PROGRAM_ADDRESS } from '@solana-program/token-2022';
 import Image from 'next/image';
 import { useCallback, useState } from 'react';
 import { useGameState } from '@/contexts/GameStateProvider';
@@ -24,7 +25,7 @@ const ChopTreeButton = () => {
 
     const onChopClick = useCallback(async () => {
         setIsLoadingSession(true);
-        if (!playerDataPDA || !sessionWallet?.publicKey || !sessionWallet.sessionToken) {
+        if (!signer || !playerDataPDA || !sessionWallet?.publicKey || !sessionWallet.sessionToken) {
             setIsLoadingSession(false);
             return;
         }
@@ -59,11 +60,18 @@ const ChopTreeButton = () => {
         }
 
         try {
+            const [playerTokenAccount] = await findAssociatedTokenPda({
+                owner: signer.address,
+                mint: nft.id as Address,
+                tokenProgram: TOKEN_2022_PROGRAM_ADDRESS,
+            });
+
             const instruction = await getChopTreeInstructionAsync({
                 sessionToken: sessionWallet.sessionToken as Address,
                 player: playerDataPDA,
                 signer: createNoopSigner(sessionWallet.publicKey.toBase58() as Address),
                 mint: nft.id as Address,
+                playerTokenAccount,
                 nftAuthority,
                 levelSeed: GAME_DATA_SEED,
                 counter: transactionCounter,
@@ -83,7 +91,7 @@ const ChopTreeButton = () => {
         } finally {
             setIsLoadingSession(false);
         }
-    }, [sessionWallet, nftState, playerDataPDA, transactionCounter]);
+    }, [signer, sessionWallet, nftState, playerDataPDA, transactionCounter]);
 
     const onChopMainWalletClick = useCallback(async () => {
         if (!signer || !playerDataPDA) return;
@@ -126,10 +134,17 @@ const ChopTreeButton = () => {
                 typeof nft.authorities[0] === 'string' ? nft.authorities[0] : nft.authorities[0].address;
             console.log('NFTid', nft.id, 'NFT authority', nftAuthorityAddress);
 
+            const [playerTokenAccount] = await findAssociatedTokenPda({
+                owner: signer.address,
+                mint: nft.id as Address,
+                tokenProgram: TOKEN_2022_PROGRAM_ADDRESS,
+            });
+
             const instruction = await getChopTreeInstructionAsync({
                 player: playerDataPDA,
                 signer,
                 mint: nft.id as Address,
+                playerTokenAccount,
                 nftAuthority: nftAuthorityAddress as Address,
                 levelSeed: GAME_DATA_SEED,
                 counter: transactionCounter,

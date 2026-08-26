@@ -11,7 +11,7 @@ impl GameData {
     pub fn on_tree_chopped(&mut self, amount_chopped: u64) -> Result<()> {
         match self.total_wood_collected.checked_add(amount_chopped) {
             Some(v) => {
-                if self.total_wood_collected >= MAX_WOOD_PER_TREE {
+                if v >= MAX_WOOD_PER_TREE {
                     self.total_wood_collected = 0;
                     msg!("Tree successfully chopped. New Tree coming up.");
                 } else {

@@ -2,9 +2,9 @@ pub use crate::errors::GameErrorCode;
 pub use crate::state::game_data::GameData;
 use crate::{state::player_data::PlayerData, NftAuthority};
 use anchor_lang::prelude::*;
-use anchor_spl::token_interface::{Token2022};
-use session_keys::{Session, SessionToken};
 use anchor_lang::solana_program::program::invoke_signed;
+use anchor_spl::token_interface::{Mint, Token2022, TokenAccount};
+use session_keys::{Session, SessionToken};
 
 pub fn chop_tree(ctx: Context<ChopTree>, counter: u16, amount: u64) -> Result<()> {
     let account: &mut ChopTree<'_> = ctx.accounts;
@@ -37,7 +37,9 @@ pub fn chop_tree(ctx: Context<ChopTree>, counter: u16, amount: u64) -> Result<()
             &anchor_spl::token_2022::spl_token_2022::id(),
             ctx.accounts.mint.to_account_info().key,
             ctx.accounts.nft_authority.to_account_info().key,
-            anchor_spl::token_2022_extensions::spl_token_metadata_interface::state::Field::Key("wood".to_string()),
+            anchor_spl::token_2022_extensions::spl_token_metadata_interface::state::Field::Key(
+                "wood".to_string(),
+            ),
             ctx.accounts.player.wood.to_string(),
         ),
         &[
@@ -84,10 +86,17 @@ pub struct ChopTree<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
     pub system_program: Program<'info, System>,
-    /// CHECK: Make sure the ata to the mint is actually owned by the signer
     #[account(mut)]
-    pub mint: AccountInfo<'info>,
-    #[account(  
+    pub mint: InterfaceAccount<'info, Mint>,
+    // The player must hold the NFT they are updating
+    #[account(
+        associated_token::mint = mint,
+        associated_token::authority = player.authority,
+        associated_token::token_program = token_program,
+        constraint = player_token_account.amount == 1 @ GameErrorCode::NftNotOwned,
+    )]
+    pub player_token_account: InterfaceAccount<'info, TokenAccount>,
+    #[account(
         init_if_needed,
         seeds = [b"nft_authority".as_ref()],
         bump,
