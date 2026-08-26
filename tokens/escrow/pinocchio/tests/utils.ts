@@ -1,12 +1,15 @@
+import { createHash } from 'node:crypto';
 import {
     type Address,
     appendTransactionMessageInstructions,
     createTransactionMessage,
     generateKeyPairSigner,
+    getAddressDecoder,
     getAddressEncoder,
     getProgramDerivedAddress,
     getU64Encoder,
     type Instruction,
+    isOffCurveAddress,
     type KeyPairSigner,
     pipe,
     setTransactionMessageFeePayerSigner,
@@ -37,7 +40,9 @@ export const expectRevert = async (promise: Promise<unknown>) => {
     }
 };
 
-export async function sendInstructions(svm: LiteSVM, payer: KeyPairSigner, instructions: readonly Instruction[]) {
+// Sends the instructions as one transaction and returns the raw result, for
+// tests that expect the transaction to be rejected.
+export async function trySendInstructions(svm: LiteSVM, payer: KeyPairSigner, instructions: readonly Instruction[]) {
     const transactionMessage = pipe(
         createTransactionMessage({ version: 0 }),
         m => setTransactionMessageFeePayerSigner(payer, m),
@@ -45,10 +50,46 @@ export async function sendInstructions(svm: LiteSVM, payer: KeyPairSigner, instr
         m => appendTransactionMessageInstructions(instructions, m),
     );
     const signedTx = await signTransactionMessageWithSigners(transactionMessage);
-    const result = svm.sendTransaction(signedTx);
+    return svm.sendTransaction(signedTx);
+}
+
+export async function sendInstructions(svm: LiteSVM, payer: KeyPairSigner, instructions: readonly Instruction[]) {
+    const result = await trySendInstructions(svm, payer, instructions);
     if (result instanceof FailedTransactionMetadata) {
         throw new Error(`transaction failed: ${result.toString()}`);
     }
+}
+
+// Finds a bump below the canonical one that still derives a valid (off-curve)
+// address for the offer seeds, i.e. a second "valid" PDA for the same
+// (maker, id) that `find_program_address` would never return.
+export async function findNonCanonicalOfferPda(
+    programId: Address,
+    maker: Address,
+    id: bigint,
+    canonicalBump: number,
+): Promise<{ address: Address; bump: number }> {
+    const seeds = [
+        new TextEncoder().encode('offer'),
+        addressEncoder.encode(maker),
+        getU64Encoder().encode(id),
+    ] as const;
+    for (let bump = canonicalBump - 1; bump >= 0; bump--) {
+        const hash = createHash('sha256');
+        for (const part of [
+            ...seeds,
+            new Uint8Array([bump]),
+            addressEncoder.encode(programId),
+            new TextEncoder().encode('ProgramDerivedAddress'),
+        ]) {
+            hash.update(Uint8Array.from(part));
+        }
+        const address = getAddressDecoder().decode(hash.digest());
+        if (isOffCurveAddress(address)) {
+            return { address, bump };
+        }
+    }
+    throw new Error('no non-canonical bump derives an off-curve address');
 }
 
 export async function mintingTokens({

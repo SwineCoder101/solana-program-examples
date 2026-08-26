@@ -1,16 +1,25 @@
-import { generateKeyPairSigner, type KeyPairSigner, lamports } from '@solana/kit';
+import { type Address, generateKeyPairSigner, type KeyPairSigner, lamports } from '@solana/kit';
 import { getCreateAccountInstruction } from '@solana-program/system';
 import {
+    findAssociatedTokenPda,
     getInitializeAccount3Instruction,
     getTokenDecoder,
     getTokenSize,
     TOKEN_PROGRAM_ADDRESS,
 } from '@solana-program/token';
 import { assert } from 'chai';
-import { LiteSVM } from 'litesvm';
+import { FailedTransactionMetadata, LiteSVM } from 'litesvm';
 import { offerDecoder } from './account';
 import { buildMakeOffer, buildRefundOffer, buildTakeOffer } from './instruction';
-import { createValues, expectRevert, mintingTokens, sendInstructions, type TestValues } from './utils';
+import {
+    createValues,
+    expectRevert,
+    findNonCanonicalOfferPda,
+    mintingTokens,
+    sendInstructions,
+    type TestValues,
+    trySendInstructions,
+} from './utils';
 
 describe('Escrow (Pinocchio)', () => {
     let svm: LiteSVM;
@@ -383,5 +392,141 @@ describe('Escrow (Pinocchio)', () => {
                 }),
             ]),
         );
+    });
+
+    it('Take Offer returns the vault and offer rent to the maker, not the taker', async () => {
+        // The maker funded both the offer account and the vault in Make
+        // Offer, so closing them on take must hand that rent back to the
+        // maker. The taker (and whatever `payer` the taker chooses) must not
+        // be able to pocket it.
+        const offerValues = await createValues({
+            programId: values.programId,
+            maker: values.maker,
+            taker: values.taker,
+            mintAKeypair: values.mintAKeypair,
+            mintBKeypair: values.mintBKeypair,
+            id: 6n,
+        });
+
+        await sendInstructions(svm, payer, [
+            buildMakeOffer({
+                id: offerValues.id,
+                maker: offerValues.maker,
+                maker_token_a: offerValues.makerAccountA,
+                offer: offerValues.offer,
+                bump: offerValues.offerBump,
+                token_a_offered_amount: offerValues.amountA,
+                token_b_wanted_amount: offerValues.amountB,
+                vault: offerValues.vault,
+                mint_a: offerValues.mintAKeypair.address,
+                mint_b: offerValues.mintBKeypair.address,
+                payer,
+                programId: offerValues.programId,
+            }),
+        ]);
+
+        const offerInfo = svm.getAccount(offerValues.offer);
+        if (!offerInfo.exists) throw new Error('Offer account not found');
+        const vaultInfo = svm.getAccount(offerValues.vault);
+        if (!vaultInfo.exists) throw new Error('Vault account not found');
+        const closedRent = offerInfo.lamports + vaultInfo.lamports;
+
+        const balanceOf = (address: Address) => svm.getBalance(address) ?? 0n;
+        const makerBalanceBefore = balanceOf(offerValues.maker.address);
+        const takerBalanceBefore = balanceOf(offerValues.taker.address);
+
+        await sendInstructions(svm, payer, [
+            buildTakeOffer({
+                maker: offerValues.maker.address,
+                offer: offerValues.offer,
+                vault: offerValues.vault,
+                mint_a: offerValues.mintAKeypair.address,
+                mint_b: offerValues.mintBKeypair.address,
+                maker_token_b: offerValues.makerAccountB,
+                taker: offerValues.taker,
+                taker_token_a: offerValues.takerAccountA,
+                taker_token_b: offerValues.takerAccountB,
+                payer,
+                programId: offerValues.programId,
+            }),
+        ]);
+
+        assert(!svm.getAccount(offerValues.offer).exists, 'offer account not closed');
+        assert(!svm.getAccount(offerValues.vault).exists, 'vault account not closed');
+        assert.strictEqual(
+            balanceOf(offerValues.maker.address),
+            makerBalanceBefore + closedRent,
+            'the offer and vault rent should be returned to the maker',
+        );
+        assert.strictEqual(
+            balanceOf(offerValues.taker.address),
+            takerBalanceBefore,
+            'the taker should not receive any of the closed accounts rent',
+        );
+    });
+
+    it('Make Offer rejects a non-canonical offer bump', async () => {
+        // make_offer trusts the client-supplied bump and only checks that it
+        // derives *a* valid PDA, not the canonical one. Since several bumps
+        // usually derive valid addresses, one maker can hold several live
+        // offers under a single (maker, id) - which everything else treats
+        // as a unique key.
+        const offerValues = await createValues({
+            programId: values.programId,
+            maker: values.maker,
+            taker: values.taker,
+            mintAKeypair: values.mintAKeypair,
+            mintBKeypair: values.mintBKeypair,
+            id: 7n,
+        });
+
+        await sendInstructions(svm, payer, [
+            buildMakeOffer({
+                id: offerValues.id,
+                maker: offerValues.maker,
+                maker_token_a: offerValues.makerAccountA,
+                offer: offerValues.offer,
+                bump: offerValues.offerBump,
+                token_a_offered_amount: offerValues.amountA,
+                token_b_wanted_amount: offerValues.amountB,
+                vault: offerValues.vault,
+                mint_a: offerValues.mintAKeypair.address,
+                mint_b: offerValues.mintBKeypair.address,
+                payer,
+                programId: offerValues.programId,
+            }),
+        ]);
+
+        const shadowOffer = await findNonCanonicalOfferPda(
+            offerValues.programId,
+            offerValues.maker.address,
+            offerValues.id,
+            offerValues.offerBump,
+        );
+        assert.notStrictEqual(shadowOffer.address, offerValues.offer);
+        const [shadowVault] = await findAssociatedTokenPda({
+            mint: offerValues.mintAKeypair.address,
+            owner: shadowOffer.address,
+            tokenProgram: TOKEN_PROGRAM_ADDRESS,
+        });
+
+        const result = await trySendInstructions(svm, payer, [
+            buildMakeOffer({
+                id: offerValues.id,
+                maker: offerValues.maker,
+                maker_token_a: offerValues.makerAccountA,
+                offer: shadowOffer.address,
+                bump: shadowOffer.bump,
+                token_a_offered_amount: offerValues.amountA,
+                token_b_wanted_amount: offerValues.amountB,
+                vault: shadowVault,
+                mint_a: offerValues.mintAKeypair.address,
+                mint_b: offerValues.mintBKeypair.address,
+                payer,
+                programId: offerValues.programId,
+            }),
+        ]);
+        assert(result instanceof FailedTransactionMetadata, 'expected a make with a non-canonical bump to fail');
+        assert(!svm.getAccount(shadowOffer.address).exists, 'a second offer was created under the same (maker, id)');
     });
 });
