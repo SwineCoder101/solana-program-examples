@@ -38,6 +38,19 @@ impl RefundOffer {
         //
         spl_token_interface::check_program_account(token_program.key)?;
 
+        // the offer is closed by assigning it to the system program below, so
+        // that account must really be the system program
+        //
+        if !solana_system_interface::program::check_id(system_program.key) {
+            return Err(ProgramError::IncorrectProgramId);
+        }
+
+        // only this program's own offer accounts may be refunded
+        //
+        if offer_info.owner != program_id {
+            return Err(ProgramError::IllegalOwner);
+        }
+
         // get the offer data
         //
         let offer = Offer::try_from_slice(&offer_info.data.borrow()[..])?;

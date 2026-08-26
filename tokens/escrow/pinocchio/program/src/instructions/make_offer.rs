@@ -44,17 +44,16 @@ pub fn make_offer(program_id: &Address, accounts: &mut [AccountView], data: &[u8
     let token_b_wanted_amount = read_u64(data, 16)?;
     let bump = *data.get(24).ok_or(ProgramError::InvalidInstructionData)?;
 
-    // Verify the supplied offer account is the canonical PDA for these seeds.
+    // Verify the supplied offer account and bump are the canonical PDA for
+    // these seeds; any other bump would let a second offer live under the
+    // same (maker, id).
     let id_bytes = id.to_le_bytes();
-    let bump_bytes = [bump];
-    let offer_pda = Address::create_program_address(
-        &[Offer::SEED_PREFIX, maker.address().as_ref(), &id_bytes, &bump_bytes],
-        program_id,
-    )
-    .map_err(|_| ProgramError::InvalidSeeds)?;
-    if offer_account.address() != &offer_pda {
+    let (offer_pda, canonical_bump) =
+        Address::find_program_address(&[Offer::SEED_PREFIX, maker.address().as_ref(), &id_bytes], program_id);
+    if offer_account.address() != &offer_pda || bump != canonical_bump {
         return Err(ProgramError::InvalidSeeds);
     }
+    let bump_bytes = [bump];
 
     // Create the offer account, signed by the offer PDA itself.
     let lamports = Rent::get()?.try_minimum_balance(Offer::LEN)?;

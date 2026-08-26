@@ -94,7 +94,7 @@ export function buildTakeOffer(props: {
             { address: props.taker_token_a, role: AccountRole.WRITABLE },
             { address: props.taker_token_b, role: AccountRole.WRITABLE },
             { address: props.vault, role: AccountRole.WRITABLE },
-            { address: props.maker, role: AccountRole.READONLY },
+            { address: props.maker, role: AccountRole.WRITABLE },
             { address: props.taker.address, role: AccountRole.WRITABLE_SIGNER, signer: props.taker },
             { address: props.payer.address, role: AccountRole.WRITABLE_SIGNER, signer: props.payer },
             { address: TOKEN_PROGRAM_ADDRESS, role: AccountRole.READONLY },
