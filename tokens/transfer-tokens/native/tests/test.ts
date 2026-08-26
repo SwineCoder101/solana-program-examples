@@ -1,4 +1,5 @@
 import {
+    AccountRole,
     type Address,
     appendTransactionMessageInstruction,
     createTransactionMessage,
@@ -241,5 +242,28 @@ describe('Transferring Tokens', () => {
         const toAta = await findAssociatedTokenAddress(nftMintKeypair.address, recipientWallet.address);
         assert.equal(tokenBalance(toAta), '1', 'unexpected recipient NFT balance');
         assert.equal(tokenBalance(fromAta), '0', 'unexpected sender NFT balance');
+    });
+
+    it('Transfer tokens to a wallet that does not sign the transaction!', async () => {
+        const mint = tokenMintKeypair.address;
+        const nonSigningRecipient = (await generateKeyPairSigner()).address;
+        const fromAta = await findAssociatedTokenAddress(mint, payer.address);
+        const toAta = await findAssociatedTokenAddress(mint, nonSigningRecipient);
+        const senderBalanceBefore = BigInt(tokenBalance(fromAta));
+        const quantity = 20n;
+
+        // The client builder forces the recipient to sign; a real recipient never does.
+        const built = createTransferTokensInstruction(mint, fromAta, toAta, payer, payer, payer, programId, quantity);
+        const ix: Instruction = {
+            ...built,
+            accounts: built.accounts.map((meta, i) =>
+                i === 4 ? { address: nonSigningRecipient, role: AccountRole.READONLY } : meta,
+            ),
+        };
+
+        await sendTransaction(ix);
+
+        assert.equal(tokenBalance(toAta), quantity.toString(), 'unexpected recipient balance');
+        assert.equal(tokenBalance(fromAta), (senderBalanceBefore - quantity).toString(), 'unexpected sender balance');
     });
 });
