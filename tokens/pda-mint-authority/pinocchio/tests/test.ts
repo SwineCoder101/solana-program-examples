@@ -69,6 +69,14 @@ async function getMetadataAddress(mint: ReturnType<typeof address>) {
     return metadata;
 }
 
+async function getMintConfigAddress(programId: ReturnType<typeof address>, mint: ReturnType<typeof address>) {
+    const [mintConfig] = await getProgramDerivedAddress({
+        programAddress: programId,
+        seeds: ['mint_config', addressEncoder.encode(mint)],
+    });
+    return mintConfig;
+}
+
 async function getMasterEditionAddress(mint: ReturnType<typeof address>) {
     const [edition] = await getProgramDerivedAddress({
         programAddress: TOKEN_METADATA_PROGRAM_ID,
@@ -153,6 +161,7 @@ describe('PDA Mint Authority (Pinocchio)', () => {
 
     it('Create an NFT!', async () => {
         const metadataAddress = await getMetadataAddress(mint.address);
+        const mintConfigAddress = await getMintConfigAddress(programId, mint.address);
 
         const data = createTokenArgsEncoder.encode({
             instruction: CREATE,
@@ -167,6 +176,7 @@ describe('PDA Mint Authority (Pinocchio)', () => {
                 { address: mint.address, role: AccountRole.WRITABLE_SIGNER, signer: mint }, // mint account
                 { address: mintAuthorityPda, role: AccountRole.READONLY }, // mint authority PDA
                 { address: metadataAddress, role: AccountRole.WRITABLE }, // metadata account
+                { address: mintConfigAddress, role: AccountRole.WRITABLE }, // mint config PDA
                 { address: payer.address, role: AccountRole.WRITABLE_SIGNER, signer: payer }, // payer
                 { address: SYSTEM_PROGRAM_ADDRESS, role: AccountRole.READONLY }, // system program
                 { address: TOKEN_PROGRAM_ADDRESS, role: AccountRole.READONLY }, // token program
@@ -183,6 +193,15 @@ describe('PDA Mint Authority (Pinocchio)', () => {
         if (!metadataAccount?.exists) throw new Error('Metadata account not found');
         assert.equal(metadataAccount.programAddress, TOKEN_METADATA_PROGRAM_ID);
         assert.isTrue(Buffer.from(metadataAccount.data).toString('utf-8').includes('Homer NFT'));
+
+        // The creator is recorded in the mint config PDA (bump, then admin).
+        const mintConfigAccount = svm.getAccount(mintConfigAddress);
+        if (!mintConfigAccount?.exists) throw new Error('Mint config account not found');
+        assert.equal(mintConfigAccount.programAddress, programId);
+        assert.deepEqual(
+            Array.from(mintConfigAccount.data.slice(1, 33)),
+            Array.from(addressEncoder.encode(payer.address)),
+        );
     });
 
     it('Rejects a Mint from a wallet that did not create the NFT', async () => {
@@ -191,6 +210,7 @@ describe('PDA Mint Authority (Pinocchio)', () => {
 
         const metadataAddress = await getMetadataAddress(mint.address);
         const editionAddress = await getMasterEditionAddress(mint.address);
+        const mintConfigAddress = await getMintConfigAddress(programId, mint.address);
         const [outsiderAta] = await findAssociatedTokenPda({
             owner: outsider.address,
             mint: mint.address,
@@ -205,6 +225,7 @@ describe('PDA Mint Authority (Pinocchio)', () => {
                     { address: metadataAddress, role: AccountRole.WRITABLE }, // metadata account
                     { address: editionAddress, role: AccountRole.WRITABLE }, // master edition account
                     { address: mintAuthorityPda, role: AccountRole.READONLY }, // mint authority PDA
+                    { address: mintConfigAddress, role: AccountRole.READONLY }, // mint config PDA
                     { address: outsiderAta, role: AccountRole.WRITABLE }, // outsider's associated token account
                     { address: outsider.address, role: AccountRole.WRITABLE_SIGNER, signer: outsider }, // payer
                     { address: SYSTEM_PROGRAM_ADDRESS, role: AccountRole.READONLY }, // system program
@@ -228,6 +249,7 @@ describe('PDA Mint Authority (Pinocchio)', () => {
     it('Mint the NFT to your wallet!', async () => {
         const metadataAddress = await getMetadataAddress(mint.address);
         const editionAddress = await getMasterEditionAddress(mint.address);
+        const mintConfigAddress = await getMintConfigAddress(programId, mint.address);
         const [ata] = await findAssociatedTokenPda({
             owner: payer.address,
             mint: mint.address,
@@ -241,6 +263,7 @@ describe('PDA Mint Authority (Pinocchio)', () => {
                 { address: metadataAddress, role: AccountRole.WRITABLE }, // metadata account
                 { address: editionAddress, role: AccountRole.WRITABLE }, // master edition account
                 { address: mintAuthorityPda, role: AccountRole.READONLY }, // mint authority PDA
+                { address: mintConfigAddress, role: AccountRole.READONLY }, // mint config PDA
                 { address: ata, role: AccountRole.WRITABLE }, // associated token account
                 { address: payer.address, role: AccountRole.WRITABLE_SIGNER, signer: payer }, // payer
                 { address: SYSTEM_PROGRAM_ADDRESS, role: AccountRole.READONLY }, // system program

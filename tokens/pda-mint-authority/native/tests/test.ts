@@ -32,6 +32,7 @@ describe('NFT Minter', () => {
     let mintKeypair: KeyPairSigner;
     let mintAuthorityAddress: Address;
     let mintAuthorityBump: number;
+    let mintConfigAddress: Address;
     let metadataAddress: Address;
     let editionAddress: Address;
 
@@ -49,6 +50,11 @@ describe('NFT Minter', () => {
         });
 
         mintKeypair = await generateKeyPairSigner();
+
+        [mintConfigAddress] = await getProgramDerivedAddress({
+            programAddress: programId,
+            seeds: ['mint_config', addressEncoder.encode(mintKeypair.address)],
+        });
 
         [metadataAddress] = await getProgramDerivedAddress({
             programAddress: TOKEN_METADATA_PROGRAM_ADDRESS,
@@ -102,6 +108,7 @@ describe('NFT Minter', () => {
             mintKeypair,
             mintAuthorityAddress,
             metadataAddress,
+            mintConfigAddress,
             payer,
             programId,
             'Homer NFT',
@@ -122,6 +129,15 @@ describe('NFT Minter', () => {
         const metadataInfo = svm.getAccount(metadataAddress);
         assert(metadataInfo.exists, 'metadata account not created');
         assert(metadataInfo.programAddress === TOKEN_METADATA_PROGRAM_ADDRESS, 'metadata account has wrong owner');
+
+        const mintConfigInfo = svm.getAccount(mintConfigAddress);
+        assert(mintConfigInfo.exists, 'mint config account not created');
+        assert(mintConfigInfo.programAddress === programId, 'mint config account not owned by the program');
+        assert.deepEqual(
+            Array.from(mintConfigInfo.data.slice(1, 33)),
+            Array.from(addressEncoder.encode(payer.address)),
+            'creator not recorded in the mint config',
+        );
     });
 
     it('Rejects a Mint from a wallet that did not create the NFT', async () => {
@@ -139,6 +155,7 @@ describe('NFT Minter', () => {
             metadataAddress,
             editionAddress,
             mintAuthorityAddress,
+            mintConfigAddress,
             outsiderTokenAccountAddress,
             outsider,
             programId,
@@ -166,6 +183,7 @@ describe('NFT Minter', () => {
             metadataAddress,
             editionAddress,
             mintAuthorityAddress,
+            mintConfigAddress,
             associatedTokenAccountAddress,
             payer,
             programId,
