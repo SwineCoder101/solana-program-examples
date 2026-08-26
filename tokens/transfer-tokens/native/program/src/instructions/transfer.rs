@@ -62,15 +62,13 @@ pub fn transfer_tokens(accounts: &[AccountInfo], args: TransferTokensArgs) -> Pr
             from_associated_token_account.key,
             to_associated_token_account.key,
             owner.key,
-            &[owner.key, recipient.key],
+            &[owner.key],
             args.quantity,
         )?,
         &[
-            mint_account.clone(),
             from_associated_token_account.clone(),
             to_associated_token_account.clone(),
             owner.clone(),
-            recipient.clone(),
             token_program.clone(),
         ],
     )?;

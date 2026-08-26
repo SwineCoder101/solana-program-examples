@@ -1,5 +1,4 @@
 import {
-    AccountRole,
     type Address,
     appendTransactionMessageInstruction,
     createTransactionMessage,
@@ -217,7 +216,7 @@ describe('Transferring Tokens', () => {
             await findAssociatedTokenAddress(mint, payer.address),
             await findAssociatedTokenAddress(mint, recipientWallet.address),
             payer,
-            recipientWallet,
+            recipientWallet.address,
             payer,
             programId,
             quantity,
@@ -252,14 +251,16 @@ describe('Transferring Tokens', () => {
         const senderBalanceBefore = BigInt(tokenBalance(fromAta));
         const quantity = 20n;
 
-        // The client builder forces the recipient to sign; a real recipient never does.
-        const built = createTransferTokensInstruction(mint, fromAta, toAta, payer, payer, payer, programId, quantity);
-        const ix: Instruction = {
-            ...built,
-            accounts: built.accounts.map((meta, i) =>
-                i === 4 ? { address: nonSigningRecipient, role: AccountRole.READONLY } : meta,
-            ),
-        };
+        const ix = createTransferTokensInstruction(
+            mint,
+            fromAta,
+            toAta,
+            payer,
+            nonSigningRecipient,
+            payer,
+            programId,
+            quantity,
+        );
 
         await sendTransaction(ix);
 
