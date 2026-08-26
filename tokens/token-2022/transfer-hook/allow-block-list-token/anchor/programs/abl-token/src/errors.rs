@@ -16,4 +16,7 @@ pub enum ABListError {
 
     #[msg("Mint is not configured to use this transfer hook program")]
     MintNotUsingThisHook,
+
+    #[msg("Token account must have the ImmutableOwner extension")]
+    ImmutableOwnerRequired,
 }
