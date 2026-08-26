@@ -66,7 +66,11 @@ describe('transfer-hook', () => {
         program.programId,
     );
 
-    const [counterPDA] = PublicKey.findProgramAddressSync([Buffer.from('counter')], program.programId);
+    // Per-mint transfer counter PDA
+    const [counterPDA] = PublicKey.findProgramAddressSync(
+        [Buffer.from('counter'), mint.publicKey.toBuffer()],
+        program.programId,
+    );
 
     // Number of hook-gated transfers executed against `mint` so far
     let transfersSoFar = 0;
@@ -91,6 +95,7 @@ describe('transfer-hook', () => {
         );
         return sendAndConfirmTransaction(connection, new Transaction().add(ix), [wallet.payer], {
             skipPreflight: true,
+            commitment: 'confirmed',
         });
     }
 
@@ -314,6 +319,16 @@ describe('transfer-hook', () => {
 
         const destinationAccount = await getAccount(connection, destination, 'confirmed', TOKEN_2022_PROGRAM_ID);
         expect(destinationAccount.amount).to.equal(BigInt(1 * 10 ** decimals));
+
+        // Each mint gets its own counter
+        const [secondCounterPDA] = PublicKey.findProgramAddressSync(
+            [Buffer.from('counter'), secondMint.publicKey.toBuffer()],
+            program.programId,
+        );
+        const secondCounter = await program.account.counterAccount.fetch(secondCounterPDA);
+        expect(secondCounter.counter.toNumber()).to.equal(1);
+        const firstCounter = await program.account.counterAccount.fetch(counterPDA);
+        expect(firstCounter.counter.toNumber()).to.equal(transfersSoFar);
     });
 
     it('Try call transfer hook without transfer', async () => {
