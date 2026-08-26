@@ -21,11 +21,13 @@ pub fn reallocate_without_zero_init(accounts: &[AccountInfo], args: EnhancedAddr
     let account_span = borsh::to_vec(&enhanced_address_info_data)?.len();
     let lamports_required = (Rent::get()?).minimum_balance(account_span);
 
-    let diff = lamports_required - target_account.lamports();
-    invoke(
-        &solana_system_interface::instruction::transfer(payer.key, target_account.key, diff),
-        &[payer.clone(), target_account.clone(), system_program.clone()],
-    )?;
+    let diff = lamports_required.saturating_sub(target_account.lamports());
+    if diff > 0 {
+        invoke(
+            &solana_system_interface::instruction::transfer(payer.key, target_account.key, diff),
+            &[payer.clone(), target_account.clone(), system_program.clone()],
+        )?;
+    }
 
     target_account.resize(account_span)?;
 
