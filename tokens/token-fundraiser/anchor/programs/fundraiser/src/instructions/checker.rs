@@ -1,19 +1,10 @@
 use anchor_lang::prelude::*;
 use anchor_spl::{
-    associated_token::AssociatedToken, 
-    token::{
-        transfer, 
-        Mint, 
-        Token, 
-        TokenAccount, 
-        Transfer
-    }
+    associated_token::AssociatedToken,
+    token::{transfer, Mint, Token, TokenAccount, Transfer},
 };
 
-use crate::{
-    state::Fundraiser, 
-    FundraiserError
-};
+use crate::{state::Fundraiser, FundraiserError};
 
 #[derive(Accounts)]
 pub struct CheckContributions<'info> {
@@ -48,12 +39,9 @@ pub struct CheckContributions<'info> {
 
 impl<'info> CheckContributions<'info> {
     pub fn check_contributions(&self) -> Result<()> {
-        
-        // Check if the target amount has been met
-        require!(
-            self.vault.amount >= self.fundraiser.amount_to_raise,
-            FundraiserError::TargetNotMet
-        );
+        // Check if the target amount has been met. Gate on the tracked
+        // contributions, not the vault balance, which anyone can inflate directly.
+        require!(self.fundraiser.current_amount >= self.fundraiser.amount_to_raise, FundraiserError::TargetNotMet);
 
         // Transfer the funds to the maker
         // CPI to the token program to transfer the funds
@@ -67,11 +55,8 @@ impl<'info> CheckContributions<'info> {
         };
 
         // Signer seeds to sign the CPI on behalf of the fundraiser account
-        let signer_seeds: [&[&[u8]]; 1] = [&[
-            b"fundraiser".as_ref(),
-            self.maker.to_account_info().key.as_ref(),
-            &[self.fundraiser.bump],
-        ]];
+        let signer_seeds: [&[&[u8]]; 1] =
+            [&[b"fundraiser".as_ref(), self.maker.to_account_info().key.as_ref(), &[self.fundraiser.bump]]];
 
         // CPI context with signer since the fundraiser account is a PDA
         let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, &signer_seeds);

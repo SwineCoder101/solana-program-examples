@@ -95,10 +95,11 @@ impl<'info> Initialize<'info> {
     pub fn initialize(&mut self, amount: u64, duration: u8, bumps: &InitializeBumps) -> Result<()> {
 
         // Check if the amount to raise meets the minimum amount required
-        require!(
-            amount > MIN_AMOUNT_TO_RAISE.pow(self.mint_to_raise.decimals as u32),
-            FundraiserError::InvalidAmount
-        );
+        let min_amount = 10u64
+            .checked_pow(self.mint_to_raise.decimals as u32)
+            .and_then(|one_token| one_token.checked_mul(MIN_AMOUNT_TO_RAISE))
+            .ok_or(FundraiserError::DecimalsOverflow)?;
+        require!(amount >= min_amount, FundraiserError::InvalidAmount);
 
         // Initialize the fundraiser account
         self.fundraiser.set_inner(Fundraiser {
@@ -116,7 +117,7 @@ impl<'info> Initialize<'info> {
 }
 ```
 
-In here, we basically just set the data of our Fundraiser account if the amount to raise is bigger than 3 (minimum amount)
+In here, we basically just set the data of our Fundraiser account if the amount to raise is at least 3 whole tokens (`3 * 10^decimals` base units)
 
 ---
 
@@ -194,10 +195,9 @@ impl<'info> Contribute<'info> {
     pub fn contribute(&mut self, amount: u64) -> Result<()> {
 
         // Check if the amount to contribute meets the minimum amount required
-        require!(
-            amount > 1_u8.pow(self.mint_to_raise.decimals as u32) as u64,
-            FundraiserError::ContributionTooSmall
-        );
+        let one_token =
+            10u64.checked_pow(self.mint_to_raise.decimals as u32).ok_or(FundraiserError::DecimalsOverflow)?;
+        require!(amount >= one_token, FundraiserError::ContributionTooSmall);
 
         // Check if the amount to contribute is less than the maximum allowed contribution
         require!(
@@ -320,11 +320,9 @@ In this context, we are passing all the accounts needed for a user to claim the 
 impl<'info> CheckContributions<'info> {
     pub fn check_contributions(&self) -> Result<()> {
 
-        // Check if the target amount has been met
-        require!(
-            self.vault.amount >= self.fundraiser.amount_to_raise,
-            FundraiserError::TargetNotMet
-        );
+        // Check if the target amount has been met. Gate on the tracked
+        // contributions, not the vault balance, which anyone can inflate directly.
+        require!(self.fundraiser.current_amount >= self.fundraiser.amount_to_raise, FundraiserError::TargetNotMet);
 
         // Transfer the funds to the maker
         // CPI to the token program to transfer the funds
@@ -355,7 +353,7 @@ impl<'info> CheckContributions<'info> {
 }
 ```
 
-In this implementation, we check if the amount of tokens in the vault is equal or bigger then the fundraising campaign target.
+In this implementation, we check if the amount contributed through the program (`current_amount`) has reached the fundraising campaign target. The raw vault balance is deliberately not used here: anyone can inflate it with a direct token transfer, which must not flip the campaign to "target met".
 If it is, then we perform a CPI to the token program to transfer the funds from the vault to the maker ATA. Since the vault is an ATA, we need to create our CPI context with a signer and use the seeds and bump from the PDA (We are signing with our program on behalf of that PDA).
 
 Finally, we close our Fundraiser account and send the lamports from the rent back to the maker (done with the "close" constraint int the Fundraiser account).
@@ -434,10 +432,8 @@ impl<'info> Refund<'info> {
             crate::FundraiserError::FundraiserNotEnded
         );
 
-        require!(
-            self.vault.amount < self.fundraiser.amount_to_raise,
-            crate::FundraiserError::TargetMet
-        );
+        // Gate on the tracked contributions, not the vault balance, which anyone can inflate directly.
+        require!(self.fundraiser.current_amount < self.fundraiser.amount_to_raise, crate::FundraiserError::TargetMet);
 
         // Transfer the funds back to the contributor
         // CPI to the token program to transfer the funds

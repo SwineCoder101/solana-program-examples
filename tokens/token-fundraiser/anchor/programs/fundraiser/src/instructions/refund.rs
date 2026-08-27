@@ -1,18 +1,9 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{
-    transfer, 
-    Mint, 
-    Token, 
-    TokenAccount, 
-    Transfer
-};
+use anchor_spl::token::{transfer, Mint, Token, TokenAccount, Transfer};
 
 use crate::{
-    state::{
-        Contributor, 
-        Fundraiser
-    }, 
-    SECONDS_TO_DAYS
+    state::{Contributor, Fundraiser},
+    SECONDS_TO_DAYS,
 };
 
 #[derive(Accounts)]
@@ -53,7 +44,6 @@ pub struct Refund<'info> {
 
 impl<'info> Refund<'info> {
     pub fn refund(&mut self) -> Result<()> {
-
         // Check that the fundraising duration has elapsed
         let current_time = Clock::get()?.unix_timestamp;
 
@@ -62,10 +52,8 @@ impl<'info> Refund<'info> {
             crate::FundraiserError::FundraiserNotEnded
         );
 
-        require!(
-            self.vault.amount < self.fundraiser.amount_to_raise,
-            crate::FundraiserError::TargetMet
-        );
+        // Gate on the tracked contributions, not the vault balance, which anyone can inflate directly.
+        require!(self.fundraiser.current_amount < self.fundraiser.amount_to_raise, crate::FundraiserError::TargetMet);
 
         // Transfer the funds back to the contributor
         // CPI to the token program to transfer the funds
@@ -79,11 +67,8 @@ impl<'info> Refund<'info> {
         };
 
         // Signer seeds to sign the CPI on behalf of the fundraiser account
-        let signer_seeds: [&[&[u8]]; 1] = [&[
-            b"fundraiser".as_ref(),
-            self.maker.to_account_info().key.as_ref(),
-            &[self.fundraiser.bump],
-        ]];
+        let signer_seeds: [&[&[u8]]; 1] =
+            [&[b"fundraiser".as_ref(), self.maker.to_account_info().key.as_ref(), &[self.fundraiser.bump]]];
 
         // CPI context with signer since the fundraiser account is a PDA
         let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, &signer_seeds);
