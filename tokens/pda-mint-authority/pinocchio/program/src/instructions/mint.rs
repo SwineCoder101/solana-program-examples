@@ -11,7 +11,7 @@ use pinocchio_log::log;
 use pinocchio_token::instructions::MintTo;
 
 use crate::instructions::TOKEN_METADATA_PROGRAM_ID;
-use crate::state::MintAuthorityPda;
+use crate::state::{MintAuthorityPda, MintConfig};
 
 /// Discriminator of the Metaplex `CreateMasterEditionV3` instruction (variant 17
 /// of the Token Metadata program's instruction enum).
@@ -28,18 +28,19 @@ const CREATE_MASTER_EDITION_V3: u8 = 17;
 ///   1. `[writable]`         metadata account
 ///   2. `[writable]`         master edition account (the edition PDA)
 ///   3. `[]`                 mint authority PDA (also the metadata update authority)
-///   4. `[writable]`         payer's associated token account (the destination)
-///   5. `[signer, writable]` payer (funds the accounts and owns the NFT)
-///   6. `[]`                 system program
-///   7. `[]`                 token program
-///   8. `[]`                 associated token program
-///   9. `[]`                 token metadata program
+///   4. `[]`                 mint config PDA (records the creator)
+///   5. `[writable]`         payer's associated token account (the destination)
+///   6. `[signer, writable]` payer (must be the creator; funds the accounts and owns the NFT)
+///   7. `[]`                 system program
+///   8. `[]`                 token program
+///   9. `[]`                 associated token program
+///  10. `[]`                 token metadata program
 ///
 /// Instruction data: none.
 pub fn mint_to(program_id: &Address, accounts: &mut [AccountView]) -> ProgramResult {
     // `associated_token_program` and `token_metadata_program` are unused
     // directly, but must be supplied so they are present for the CPIs below.
-    let [mint_account, metadata_account, edition_account, mint_authority, associated_token_account, payer, system_program, token_program, _associated_token_program, _token_metadata_program] =
+    let [mint_account, metadata_account, edition_account, mint_authority, mint_config, associated_token_account, payer, system_program, token_program, _associated_token_program, _token_metadata_program] =
         accounts
     else {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -54,6 +55,23 @@ pub fn mint_to(program_id: &Address, accounts: &mut [AccountView]) -> ProgramRes
         .map_err(|_| ProgramError::InvalidSeeds)?;
     if mint_authority.address() != &pda {
         return Err(ProgramError::InvalidSeeds);
+    }
+
+    // Only the wallet recorded at create time may mint this NFT.
+    if !payer.is_signer() {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+    let config = MintConfig::deserialize(&mint_config.try_borrow()?)?;
+    let mint_config_pda = Address::create_program_address(
+        &[MintConfig::SEED_PREFIX, mint_account.address().as_ref(), &[config.bump]],
+        program_id,
+    )
+    .map_err(|_| ProgramError::InvalidSeeds)?;
+    if mint_config.address() != &mint_config_pda || !mint_config.owned_by(program_id) {
+        return Err(ProgramError::InvalidSeeds);
+    }
+    if &config.admin != payer.address() {
+        return Err(ProgramError::IncorrectAuthority);
     }
 
     // Signer seeds for the mint-authority PDA, reused by both CPIs below.

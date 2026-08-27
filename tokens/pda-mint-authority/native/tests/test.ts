@@ -32,6 +32,7 @@ describe('NFT Minter', () => {
     let mintKeypair: KeyPairSigner;
     let mintAuthorityAddress: Address;
     let mintAuthorityBump: number;
+    let mintConfigAddress: Address;
     let metadataAddress: Address;
     let editionAddress: Address;
 
@@ -49,6 +50,11 @@ describe('NFT Minter', () => {
         });
 
         mintKeypair = await generateKeyPairSigner();
+
+        [mintConfigAddress] = await getProgramDerivedAddress({
+            programAddress: programId,
+            seeds: ['mint_config', addressEncoder.encode(mintKeypair.address)],
+        });
 
         [metadataAddress] = await getProgramDerivedAddress({
             programAddress: TOKEN_METADATA_PROGRAM_ADDRESS,
@@ -70,15 +76,19 @@ describe('NFT Minter', () => {
         });
     });
 
-    async function sendTransaction(ix: Instruction) {
+    async function trySendTransaction(ix: Instruction, feePayer: KeyPairSigner = payer) {
         const transactionMessage = pipe(
             createTransactionMessage({ version: 0 }),
-            m => setTransactionMessageFeePayerSigner(payer, m),
+            m => setTransactionMessageFeePayerSigner(feePayer, m),
             m => svm.setTransactionMessageLifetimeUsingLatestBlockhash(m),
             m => appendTransactionMessageInstruction(ix, m),
         );
         const signedTx = await signTransactionMessageWithSigners(transactionMessage);
-        const result = svm.sendTransaction(signedTx);
+        return svm.sendTransaction(signedTx);
+    }
+
+    async function sendTransaction(ix: Instruction, feePayer: KeyPairSigner = payer) {
+        const result = await trySendTransaction(ix, feePayer);
         assert(!(result instanceof FailedTransactionMetadata), `transaction failed: ${result.toString()}`);
     }
 
@@ -98,6 +108,7 @@ describe('NFT Minter', () => {
             mintKeypair,
             mintAuthorityAddress,
             metadataAddress,
+            mintConfigAddress,
             payer,
             programId,
             'Homer NFT',
@@ -118,6 +129,46 @@ describe('NFT Minter', () => {
         const metadataInfo = svm.getAccount(metadataAddress);
         assert(metadataInfo.exists, 'metadata account not created');
         assert(metadataInfo.programAddress === TOKEN_METADATA_PROGRAM_ADDRESS, 'metadata account has wrong owner');
+
+        const mintConfigInfo = svm.getAccount(mintConfigAddress);
+        assert(mintConfigInfo.exists, 'mint config account not created');
+        assert(mintConfigInfo.programAddress === programId, 'mint config account not owned by the program');
+        assert.deepEqual(
+            Array.from(mintConfigInfo.data.slice(1, 33)),
+            Array.from(addressEncoder.encode(payer.address)),
+            'creator not recorded in the mint config',
+        );
+    });
+
+    it('Rejects a Mint from a wallet that did not create the NFT', async () => {
+        const outsider = await generateKeyPairSigner();
+        svm.airdrop(outsider.address, lamports(10_000_000_000n));
+
+        const [outsiderTokenAccountAddress] = await findAssociatedTokenPda({
+            mint: mintKeypair.address,
+            owner: outsider.address,
+            tokenProgram: TOKEN_PROGRAM_ADDRESS,
+        });
+
+        const ix = createMintInstruction(
+            mintKeypair.address,
+            metadataAddress,
+            editionAddress,
+            mintAuthorityAddress,
+            mintConfigAddress,
+            outsiderTokenAccountAddress,
+            outsider,
+            programId,
+        );
+
+        const result = await trySendTransaction(ix, outsider);
+        assert(result instanceof FailedTransactionMetadata, 'an unrelated wallet minted the NFT created by the payer');
+
+        assert(!svm.getAccount(outsiderTokenAccountAddress).exists, 'outsider received a token account');
+        const mintInfo = svm.getAccount(mintKeypair.address);
+        assert(mintInfo.exists, 'mint account not found');
+        assert.equal(getMintDecoder().decode(mintInfo.data).supply, 0n, 'NFT was minted by an unrelated wallet');
+        assert(!svm.getAccount(editionAddress).exists, 'edition account was created by an unrelated wallet');
     });
 
     it('Mint the NFT to your wallet!', async () => {
@@ -132,6 +183,7 @@ describe('NFT Minter', () => {
             metadataAddress,
             editionAddress,
             mintAuthorityAddress,
+            mintConfigAddress,
             associatedTokenAccountAddress,
             payer,
             programId,
@@ -143,6 +195,10 @@ describe('NFT Minter', () => {
         assert(tokenInfo.exists, 'associated token account not created');
         const tokenAccount = getTokenDecoder().decode(tokenInfo.data);
         assert.equal(tokenAccount.amount.toString(), '1', 'unexpected NFT balance');
+        assert(tokenAccount.owner === payer.address, 'NFT did not land in the creator wallet');
+        const mintInfo = svm.getAccount(mintKeypair.address);
+        assert(mintInfo.exists, 'mint account not found');
+        assert.equal(getMintDecoder().decode(mintInfo.data).supply, 1n, 'unexpected NFT supply');
 
         const editionInfo = svm.getAccount(editionAddress);
         assert(editionInfo.exists, 'edition account not created');

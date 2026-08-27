@@ -5,6 +5,7 @@ use {
         entrypoint::ProgramResult,
         msg,
         program::{invoke, invoke_signed},
+        program_error::ProgramError,
         program_pack::Pack,
         pubkey::Pubkey,
         rent::Rent,
@@ -14,7 +15,7 @@ use {
     spl_token_interface::{instruction as token_instruction, state::Mint},
 };
 
-use crate::state::MintAuthorityPda;
+use crate::state::{MintAuthorityPda, MintConfig};
 
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 pub struct CreateTokenArgs {
@@ -29,6 +30,7 @@ pub fn create_token(program_id: &Pubkey, accounts: &[AccountInfo], args: CreateT
     let mint_account = next_account_info(accounts_iter)?;
     let mint_authority = next_account_info(accounts_iter)?;
     let metadata_account = next_account_info(accounts_iter)?;
+    let mint_config = next_account_info(accounts_iter)?;
     let payer = next_account_info(accounts_iter)?;
     let rent = next_account_info(accounts_iter)?;
     let system_program = next_account_info(accounts_iter)?;
@@ -96,6 +98,28 @@ pub fn create_token(program_id: &Pubkey, accounts: &[AccountInfo], args: CreateT
         ],
         &[&[MintAuthorityPda::SEED_PREFIX.as_bytes(), &[bump]]],
     )?;
+
+    // Record the creator so only they can later mint this NFT
+    //
+    msg!("Creating mint config account...");
+    msg!("Mint config address: {}", mint_config.key);
+    let (mint_config_pda, mint_config_bump) =
+        Pubkey::find_program_address(&[MintConfig::SEED_PREFIX.as_bytes(), mint_account.key.as_ref()], program_id);
+    if mint_config.key != &mint_config_pda {
+        return Err(ProgramError::InvalidSeeds);
+    }
+    invoke_signed(
+        &system_instruction::create_account(
+            payer.key,
+            mint_config.key,
+            (Rent::get()?).minimum_balance(MintConfig::SIZE),
+            MintConfig::SIZE as u64,
+            program_id,
+        ),
+        &[mint_config.clone(), payer.clone(), system_program.clone()],
+        &[&[MintConfig::SEED_PREFIX.as_bytes(), mint_account.key.as_ref(), &[mint_config_bump]]],
+    )?;
+    MintConfig { bump: mint_config_bump, admin: *payer.key }.serialize(&mut &mut mint_config.data.borrow_mut()[..])?;
 
     msg!("Token mint created successfully.");
 
