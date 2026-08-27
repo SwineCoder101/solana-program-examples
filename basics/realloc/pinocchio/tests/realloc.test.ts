@@ -21,7 +21,7 @@ import {
     setTransactionMessageFeePayerSigner,
     signTransactionMessageWithSigners,
 } from '@solana/kit';
-import { SYSTEM_PROGRAM_ADDRESS } from '@solana-program/system';
+import { getTransferSolInstruction, SYSTEM_PROGRAM_ADDRESS } from '@solana-program/system';
 import { assert } from 'chai';
 import { FailedTransactionMetadata, LiteSVM } from 'litesvm';
 
@@ -72,6 +72,10 @@ const workInfoDecoder = getStructDecoder([
     ['company', fixedStringDecoder],
     ['yearsEmployed', getU8Decoder()],
 ]);
+
+const ENHANCED_ADDRESS_INFO_LEN = 37;
+// LiteSVM's default fee for a single-signature transaction.
+const TRANSACTION_FEE = 5_000n;
 
 describe('Realloc!', () => {
     const svm = new LiteSVM();
@@ -181,5 +185,67 @@ describe('Realloc!', () => {
         assert.strictEqual(workInfo.position, 'Eng');
         assert.strictEqual(workInfo.company, 'Anza');
         assert.strictEqual(workInfo.yearsEmployed, 2);
+    });
+    it('Reallocate WITHOUT zero init when the account already holds more than the new rent-exempt minimum', async () => {
+        const overfundedAccount = await generateKeyPairSigner();
+        const createIx = {
+            programAddress: programId,
+            accounts: [
+                { address: overfundedAccount.address, role: AccountRole.WRITABLE_SIGNER, signer: overfundedAccount },
+                { address: payer.address, role: AccountRole.WRITABLE_SIGNER, signer: payer },
+                { address: SYSTEM_PROGRAM_ADDRESS, role: AccountRole.READONLY },
+            ],
+            data: createEncoder.encode({
+                discriminator: 0,
+                name: 'Jacob',
+                houseNumber: 123,
+                street: 'Main St.',
+                city: 'Chicago',
+            }),
+        };
+        await sendInstruction(createIx);
+
+        // Anyone can push the account above the enlarged rent-exempt minimum with a plain system transfer.
+        const enlargedMinimum = svm.minimumBalanceForRentExemption(BigInt(ENHANCED_ADDRESS_INFO_LEN));
+        await sendInstruction(
+            getTransferSolInstruction({
+                amount: lamports(enlargedMinimum),
+                destination: overfundedAccount.address,
+                source: payer,
+            }),
+        );
+
+        const targetLamportsBefore = svm.getBalance(overfundedAccount.address);
+        const payerLamportsBefore = svm.getBalance(payer.address);
+        assert(targetLamportsBefore !== null && payerLamportsBefore !== null);
+        assert(targetLamportsBefore > enlargedMinimum);
+
+        const reallocIx = {
+            programAddress: programId,
+            accounts: [
+                { address: overfundedAccount.address, role: AccountRole.WRITABLE },
+                { address: payer.address, role: AccountRole.WRITABLE_SIGNER, signer: payer },
+                { address: SYSTEM_PROGRAM_ADDRESS, role: AccountRole.READONLY },
+            ],
+            data: reallocWithoutZeroInitEncoder.encode({ discriminator: 1, state: 'Illinois', zip: 12345 }),
+        };
+        await sendInstruction(reallocIx);
+
+        const account = svm.getAccount(overfundedAccount.address);
+        assert(account.exists, 'test account not found');
+        const data = new Uint8Array(account.data);
+        assert.strictEqual(data.length, ENHANCED_ADDRESS_INFO_LEN);
+
+        const addressInfo = enhancedAddressInfoDecoder.decode(data);
+        assert.strictEqual(addressInfo.name, 'Jacob');
+        assert.strictEqual(addressInfo.houseNumber, 123);
+        assert.strictEqual(addressInfo.street, 'Main St.');
+        assert.strictEqual(addressInfo.city, 'Chicago');
+        assert.strictEqual(addressInfo.state, 'Illinois');
+        assert.strictEqual(addressInfo.zip, 12345);
+
+        // No top-up was needed: the target keeps its balance and the payer only pays the transaction fee.
+        assert.strictEqual(svm.getBalance(overfundedAccount.address), targetLamportsBefore);
+        assert.strictEqual(payerLamportsBefore - svm.getBalance(payer.address)!, TRANSACTION_FEE);
     });
 });

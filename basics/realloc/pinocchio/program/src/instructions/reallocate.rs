@@ -16,9 +16,10 @@ pub fn reallocate_without_zero_init(accounts: &mut [AccountView], instruction_da
     let account_span = EnhancedAddressInfo::LEN;
     let lamports_required = (Rent::get()?).try_minimum_balance(account_span)?;
 
-    let diff = lamports_required - target_account.lamports();
-
-    Transfer { from: payer, to: target_account, lamports: diff }.invoke()?;
+    let diff = lamports_required.saturating_sub(target_account.lamports());
+    if diff > 0 {
+        Transfer { from: payer, to: target_account, lamports: diff }.invoke()?;
+    }
 
     target_account.resize(account_span)?;
 
