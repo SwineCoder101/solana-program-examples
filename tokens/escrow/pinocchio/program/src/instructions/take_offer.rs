@@ -21,9 +21,9 @@ use crate::state::Offer;
 ///   4. `[writable]`         taker's token A account (created if needed)
 ///   5. `[writable]`         taker's token B account (source of the payment)
 ///   6. `[writable]`         vault (offer PDA's token A account, drained and closed)
-///   7. `[]`                 maker (receives token B)
+///   7. `[writable]`         maker (receives token B and the rent of the closed offer and vault)
 ///   8. `[signer, writable]` taker
-///   9. `[signer, writable]` payer (funds token accounts created here; reclaims the offer rent)
+///   9. `[signer, writable]` payer (funds token accounts created here)
 ///  10. `[]`                 token program
 ///  11. `[]`                 associated token program
 ///  12. `[]`                 system program
@@ -38,6 +38,10 @@ pub fn take_offer(program_id: &Address, accounts: &mut [AccountView], _data: &[u
 
     if !taker.is_signer() {
         return Err(ProgramError::MissingRequiredSignature);
+    }
+
+    if !offer_account.owned_by(program_id) {
+        return Err(ProgramError::IllegalOwner);
     }
 
     // Load the recorded offer terms (the borrow is released at the block's end).
@@ -131,20 +135,20 @@ pub fn take_offer(program_id: &Address, accounts: &mut [AccountView], _data: &[u
     }
     .invoke_signed(&signers)?;
 
-    // Close the now-empty vault, returning its rent to the taker.
+    // Close the now-empty vault, returning its rent to the maker who funded it.
     log!("Closing vault");
     CloseAccount {
         account: vault,
-        destination: taker,
+        destination: maker,
         authority: offer_account,
         multisig_signers: &[] as &[&AccountView],
     }
     .invoke_signed(&signers)?;
 
-    // Close the offer account, returning its rent to the payer that funded it.
+    // Close the offer account, returning its rent to the maker who funded it.
     log!("Closing offer account");
-    let new_payer_lamports = payer.lamports() + offer_account.lamports();
-    payer.set_lamports(new_payer_lamports);
+    let new_maker_lamports = maker.lamports() + offer_account.lamports();
+    maker.set_lamports(new_maker_lamports);
     offer_account.close()?;
 
     log!("Offer taken successfully");

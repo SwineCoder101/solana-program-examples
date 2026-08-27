@@ -44,6 +44,19 @@ impl TakeOffer {
             return Err(ProgramError::MissingRequiredSignature);
         }
 
+        // the offer is closed by assigning it to the system program below, so
+        // that account must really be the system program
+        //
+        if !solana_system_interface::program::check_id(system_program.key) {
+            return Err(ProgramError::IncorrectProgramId);
+        }
+
+        // only this program's own offer accounts may be taken
+        //
+        if offer_info.owner != program_id {
+            return Err(ProgramError::IllegalOwner);
+        }
+
         // get the offer data
         //
         let offer = Offer::try_from_slice(&offer_info.data.borrow()[..])?;
@@ -183,25 +196,25 @@ impl TakeOffer {
         solana_program::msg!("Maker B Balance After Transfer: {}", maker_amount_b);
         solana_program::msg!("Taker B Balance After Transfer: {}", taker_amount_b);
 
-        // close the vault account
+        // close the vault account, rent to the maker who funded it
         //
         invoke_signed(
             &spl_token_interface::instruction::close_account(
                 token_program.key,
                 vault.key,
-                taker.key,
+                maker.key,
                 offer_info.key,
                 &[],
             )?,
-            &[vault.clone(), taker.clone(), offer_info.clone()],
+            &[vault.clone(), maker.clone(), offer_info.clone()],
             &[offer_signer_seeds],
         )?;
 
-        // Send the rent back to the payer
+        // Send the rent back to the maker
         //
         let lamports = offer_info.lamports();
         **offer_info.lamports.borrow_mut() -= lamports;
-        **payer.lamports.borrow_mut() += lamports;
+        **maker.lamports.borrow_mut() += lamports;
 
         // Realloc the account to zero
         //

@@ -29,6 +29,10 @@ pub fn refund_offer(program_id: &Address, accounts: &mut [AccountView], _data: &
         return Err(ProgramError::MissingRequiredSignature);
     }
 
+    if !offer_account.owned_by(program_id) {
+        return Err(ProgramError::IllegalOwner);
+    }
+
     // Load the recorded offer terms (the borrow is released at the block's end).
     let offer = {
         let offer_data = offer_account.try_borrow()?;

@@ -17,7 +17,7 @@ enum EscrowInstruction {
 
 // Instruction data layout for the MakeOffer discriminator. Unlike the native
 // example, the Pinocchio program receives the offer PDA bump in the instruction
-// data (and stores it) instead of deriving it on-chain.
+// data; it must equal the canonical bump the program derives on-chain.
 const makeOfferEncoder = getStructEncoder([
     ['instruction', getU8Encoder()],
     ['id', getU64Encoder()],
@@ -99,7 +99,7 @@ export function buildTakeOffer(props: {
             { address: props.taker_token_a, role: AccountRole.WRITABLE },
             { address: props.taker_token_b, role: AccountRole.WRITABLE },
             { address: props.vault, role: AccountRole.WRITABLE },
-            { address: props.maker, role: AccountRole.READONLY },
+            { address: props.maker, role: AccountRole.WRITABLE },
             { address: props.taker.address, role: AccountRole.WRITABLE_SIGNER, signer: props.taker },
             { address: props.payer.address, role: AccountRole.WRITABLE_SIGNER, signer: props.payer },
             { address: TOKEN_PROGRAM_ADDRESS, role: AccountRole.READONLY },

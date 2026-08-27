@@ -1,5 +1,8 @@
 import {
+    AccountRole,
+    type Address,
     appendTransactionMessageInstruction,
+    appendTransactionMessageInstructions,
     createTransactionMessage,
     generateKeyPairSigner,
     type Instruction,
@@ -17,7 +20,7 @@ import {
     getTokenSize,
     TOKEN_PROGRAM_ADDRESS,
 } from '@solana-program/token';
-import { getCreateAccountInstruction } from '@solana-program/system';
+import { getCreateAccountInstruction, getTransferSolInstruction } from '@solana-program/system';
 import { assert } from 'chai';
 import { FailedTransactionMetadata, LiteSVM } from 'litesvm';
 import { offerDecoder } from './account';
@@ -53,6 +56,23 @@ describe('Escrow!', () => {
         const signedTx = await signTransactionMessageWithSigners(transactionMessage);
         const result = svm.sendTransaction(signedTx);
         assert(!(result instanceof FailedTransactionMetadata), `transaction failed: ${result.toString()}`);
+    }
+
+    // Sends the instructions as one transaction and returns the raw result,
+    // for tests that expect the transaction to be rejected.
+    async function trySendTransaction(instructions: Instruction[]) {
+        const transactionMessage = pipe(
+            createTransactionMessage({ version: 0 }),
+            m => setTransactionMessageFeePayerSigner(payer, m),
+            m => svm.setTransactionMessageLifetimeUsingLatestBlockhash(m),
+            m => appendTransactionMessageInstructions(instructions, m),
+        );
+        const signedTx = await signTransactionMessageWithSigners(transactionMessage);
+        return svm.sendTransaction(signedTx);
+    }
+
+    function balanceOf(address: Address): bigint {
+        return svm.getBalance(address) ?? 0n;
     }
 
     it('mint tokens to maker and taker', async () => {
@@ -483,5 +503,221 @@ describe('Escrow!', () => {
         const signedTx = await signTransactionMessageWithSigners(transactionMessage);
         const result = svm.sendTransaction(signedTx);
         assert(result instanceof FailedTransactionMetadata, 'expected a non-maker refund to fail');
+    });
+
+    it('Take Offer returns the vault and offer rent to the maker, not the taker', async () => {
+        // The maker funded both the offer account and the vault in Make
+        // Offer, so closing them on take must hand that rent back to the
+        // maker. The taker (and whatever `payer` the taker chooses) must not
+        // be able to pocket it.
+        const offerValues = await createValues({
+            programId: values.programId,
+            maker: values.maker,
+            taker: values.taker,
+            mintAKeypair: values.mintAKeypair,
+            mintBKeypair: values.mintBKeypair,
+            id: 6n,
+        });
+
+        await sendTransaction(
+            buildMakeOffer({
+                id: offerValues.id,
+                maker: offerValues.maker,
+                maker_token_a: offerValues.makerAccountA,
+                offer: offerValues.offer,
+                token_a_offered_amount: offerValues.amountA,
+                token_b_wanted_amount: offerValues.amountB,
+                vault: offerValues.vault,
+                mint_a: offerValues.mintAKeypair.address,
+                mint_b: offerValues.mintBKeypair.address,
+                payer,
+                programId: offerValues.programId,
+            }),
+        );
+
+        const offerInfo = svm.getAccount(offerValues.offer);
+        assert(offerInfo.exists, 'offer account not created');
+        const vaultInfo = svm.getAccount(offerValues.vault);
+        assert(vaultInfo.exists, 'vault account not created');
+        const closedRent = offerInfo.lamports + vaultInfo.lamports;
+
+        const makerBalanceBefore = balanceOf(offerValues.maker.address);
+        const takerBalanceBefore = balanceOf(offerValues.taker.address);
+
+        await sendTransaction(
+            buildTakeOffer({
+                maker: offerValues.maker.address,
+                offer: offerValues.offer,
+                vault: offerValues.vault,
+                mint_a: offerValues.mintAKeypair.address,
+                mint_b: offerValues.mintBKeypair.address,
+                maker_token_b: offerValues.makerAccountB,
+                taker: offerValues.taker,
+                taker_token_a: offerValues.takerAccountA,
+                taker_token_b: offerValues.takerAccountB,
+                payer,
+                programId: offerValues.programId,
+            }),
+        );
+
+        assert(!svm.getAccount(offerValues.offer).exists, 'offer account not closed');
+        assert(!svm.getAccount(offerValues.vault).exists, 'vault account not closed');
+        assert.strictEqual(
+            balanceOf(offerValues.maker.address),
+            makerBalanceBefore + closedRent,
+            'the offer and vault rent should be returned to the maker',
+        );
+        assert.strictEqual(
+            balanceOf(offerValues.taker.address),
+            takerBalanceBefore,
+            'the taker should not receive any of the closed accounts rent',
+        );
+    });
+
+    it('Take Offer rejects a bogus system program account', async () => {
+        // take_offer closes the offer by assigning it to whatever account is
+        // passed in the `system_program` slot without checking its key. A
+        // taker can pass their own program there and, in the same
+        // transaction, top the emptied account back up to rent exemption so
+        // it survives - leaving the maker's (maker, id) offer slot
+        // permanently owned by the taker's program.
+        const offerValues = await createValues({
+            programId: values.programId,
+            maker: values.maker,
+            taker: values.taker,
+            mintAKeypair: values.mintAKeypair,
+            mintBKeypair: values.mintBKeypair,
+            id: 7n,
+        });
+
+        await sendTransaction(
+            buildMakeOffer({
+                id: offerValues.id,
+                maker: offerValues.maker,
+                maker_token_a: offerValues.makerAccountA,
+                offer: offerValues.offer,
+                token_a_offered_amount: offerValues.amountA,
+                token_b_wanted_amount: offerValues.amountB,
+                vault: offerValues.vault,
+                mint_a: offerValues.mintAKeypair.address,
+                mint_b: offerValues.mintBKeypair.address,
+                payer,
+                programId: offerValues.programId,
+            }),
+        );
+
+        // Both receiving token accounts already exist, so take_offer makes
+        // no CPI that would touch the system program before the close.
+        svm.expireBlockhash();
+        await sendTransaction(
+            getCreateAssociatedTokenIdempotentInstruction({
+                payer,
+                ata: offerValues.makerAccountB,
+                owner: offerValues.maker.address,
+                mint: offerValues.mintBKeypair.address,
+            }),
+        );
+        svm.expireBlockhash();
+        await sendTransaction(
+            getCreateAssociatedTokenIdempotentInstruction({
+                payer,
+                ata: offerValues.takerAccountA,
+                owner: offerValues.taker.address,
+                mint: offerValues.mintAKeypair.address,
+            }),
+        );
+
+        const bogusSystemProgram = (await generateKeyPairSigner()).address;
+        const ix = buildTakeOffer({
+            maker: offerValues.maker.address,
+            offer: offerValues.offer,
+            vault: offerValues.vault,
+            mint_a: offerValues.mintAKeypair.address,
+            mint_b: offerValues.mintBKeypair.address,
+            maker_token_b: offerValues.makerAccountB,
+            taker: offerValues.taker,
+            taker_token_a: offerValues.takerAccountA,
+            taker_token_b: offerValues.takerAccountB,
+            payer,
+            programId: offerValues.programId,
+        });
+        ix.accounts[ix.accounts.length - 1] = { address: bogusSystemProgram, role: AccountRole.READONLY };
+
+        const result = await trySendTransaction([
+            ix,
+            getTransferSolInstruction({
+                source: payer,
+                destination: offerValues.offer,
+                amount: svm.minimumBalanceForRentExemption(0n),
+            }),
+        ]);
+        assert(result instanceof FailedTransactionMetadata, 'expected a take with a bogus system program to fail');
+
+        const offerInfo = svm.getAccount(offerValues.offer);
+        assert(offerInfo.exists, 'offer account should be untouched');
+        assert.strictEqual(
+            offerInfo.programAddress,
+            offerValues.programId,
+            'offer account should still be program-owned',
+        );
+        assert.strictEqual(offerDecoder.decode(offerInfo.data).id, offerValues.id, 'offer data should be untouched');
+    });
+
+    it('Refund Offer rejects a bogus system program account', async () => {
+        // Same unchecked `system_program` slot as in take_offer.
+        const offerValues = await createValues({
+            programId: values.programId,
+            maker: values.maker,
+            taker: values.taker,
+            mintAKeypair: values.mintAKeypair,
+            mintBKeypair: values.mintBKeypair,
+            id: 8n,
+        });
+
+        await sendTransaction(
+            buildMakeOffer({
+                id: offerValues.id,
+                maker: offerValues.maker,
+                maker_token_a: offerValues.makerAccountA,
+                offer: offerValues.offer,
+                token_a_offered_amount: offerValues.amountA,
+                token_b_wanted_amount: offerValues.amountB,
+                vault: offerValues.vault,
+                mint_a: offerValues.mintAKeypair.address,
+                mint_b: offerValues.mintBKeypair.address,
+                payer,
+                programId: offerValues.programId,
+            }),
+        );
+
+        const bogusSystemProgram = (await generateKeyPairSigner()).address;
+        const ix = buildRefundOffer({
+            offer: offerValues.offer,
+            mint_a: offerValues.mintAKeypair.address,
+            maker_token_a: offerValues.makerAccountA,
+            vault: offerValues.vault,
+            maker: offerValues.maker,
+            programId: offerValues.programId,
+        });
+        ix.accounts[ix.accounts.length - 1] = { address: bogusSystemProgram, role: AccountRole.READONLY };
+
+        const result = await trySendTransaction([
+            ix,
+            getTransferSolInstruction({
+                source: payer,
+                destination: offerValues.offer,
+                amount: svm.minimumBalanceForRentExemption(0n),
+            }),
+        ]);
+        assert(result instanceof FailedTransactionMetadata, 'expected a refund with a bogus system program to fail');
+
+        const offerInfo = svm.getAccount(offerValues.offer);
+        assert(offerInfo.exists, 'offer account should be untouched');
+        assert.strictEqual(
+            offerInfo.programAddress,
+            offerValues.programId,
+            'offer account should still be program-owned',
+        );
+        assert.strictEqual(offerDecoder.decode(offerInfo.data).id, offerValues.id, 'offer data should be untouched');
     });
 });
