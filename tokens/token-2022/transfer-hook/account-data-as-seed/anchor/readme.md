@@ -111,7 +111,7 @@ pub struct TransferHook<'info> {
     /// CHECK: ExtraAccountMetaList Account,
     #[account(seeds = [b"extra-account-metas", mint.key().as_ref()], bump)]
     pub extra_account_meta_list: UncheckedAccount<'info>,
-    #[account(seeds = [b"counter", owner.key().as_ref()], bump)]
+    #[account(mut, seeds = [b"counter", owner.key().as_ref()], bump)]
     pub counter_account: Account<'info, CounterAccount>,
 }
 ```
