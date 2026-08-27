@@ -4,8 +4,6 @@ use solana_program::{
     entrypoint::ProgramResult,
     program_error::ProgramError,
     pubkey::Pubkey,
-    rent::Rent,
-    sysvar::Sysvar,
 };
 
 pub fn close_user(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
@@ -26,20 +24,21 @@ pub fn close_user(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResul
         return Err(ProgramError::IncorrectProgramId);
     }
 
-    let account_span = 0usize;
-    let lamports_required = (Rent::get()?).minimum_balance(account_span);
+    if system_program.key != &solana_system_interface::program::ID {
+        return Err(ProgramError::IncorrectProgramId);
+    }
 
-    let diff = target_account.lamports() - lamports_required;
-
-    // Send the rent back to the payer
-    **target_account.lamports.borrow_mut() -= diff;
-    **payer.lamports.borrow_mut() += diff;
+    // Send all the lamports back to the payer; a zero-lamport account is
+    // deleted by the runtime, so the PDA can be created again later.
+    let lamports = target_account.lamports();
+    **target_account.lamports.borrow_mut() = 0;
+    **payer.lamports.borrow_mut() += lamports;
 
     // Realloc the account to zero
-    target_account.resize(account_span)?;
+    target_account.resize(0)?;
 
     // Assign the account to the System Program
-    target_account.assign(system_program.key);
+    target_account.assign(&solana_system_interface::program::ID);
 
     Ok(())
 }

@@ -1,6 +1,5 @@
 #![no_std]
 
-use pinocchio::Resize;
 use pinocchio::{
     cpi::{Seed, Signer},
     entrypoint,
@@ -82,21 +81,14 @@ fn process_close(program_id: &Address, accounts: &mut [AccountView]) -> ProgramR
         return Err(ProgramError::IncorrectProgramId);
     }
 
-    let rent = Rent::get()?;
-
-    let account_span = 0usize;
-    let lamports_required = rent.try_minimum_balance(account_span)?;
-
-    let diff = target_account.lamports() - lamports_required;
-
-    target_account.set_lamports(target_account.lamports() - diff);
-    payer.set_lamports(payer.lamports() + diff);
-
-    target_account.resize(account_span)?;
-
-    unsafe {
-        target_account.assign(system_program.address());
+    if system_program.address() != &pinocchio_system::ID {
+        return Err(ProgramError::IncorrectProgramId);
     }
+
+    // Send all the lamports back to the payer, then close the account so the
+    // runtime deletes it and the PDA can be created again later.
+    payer.set_lamports(payer.lamports() + target_account.lamports());
+    target_account.close()?;
 
     Ok(())
 }

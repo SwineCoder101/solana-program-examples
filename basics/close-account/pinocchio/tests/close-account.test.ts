@@ -37,6 +37,9 @@ const createUserEncoder = getStructEncoder([
 
 const userNameDecoder = fixDecoderSize(getUtf8Decoder(), USER_ACCOUNT_SIZE);
 
+// LiteSVM's default fee for a single-signature transaction.
+const TX_FEE = 5000n;
+
 describe('Close Account!', () => {
     const svm = new LiteSVM();
     let programId: Address;
@@ -64,10 +67,10 @@ describe('Close Account!', () => {
         ];
     });
 
-    async function sendInstruction(ix: Instruction) {
+    async function sendInstruction(ix: Instruction, feePayer: KeyPairSigner = payer) {
         const transactionMessage = pipe(
             createTransactionMessage({ version: 0 }),
-            m => setTransactionMessageFeePayerSigner(payer, m),
+            m => setTransactionMessageFeePayerSigner(feePayer, m),
             m => svm.setTransactionMessageLifetimeUsingLatestBlockhash(m),
             m => appendTransactionMessageInstruction(ix, m),
         );
@@ -92,8 +95,59 @@ describe('Close Account!', () => {
         assert.equal(userNameDecoder.decode(account.data), 'Jacob');
     });
 
+    it('Close with a bogus system program account is rejected', async () => {
+        // Use a separate user so this test cannot disturb the main account.
+        const other = await generateKeyPairSigner();
+        svm.airdrop(other.address, lamports(10_000_000_000n));
+        const [otherAccount, otherBump] = await getProgramDerivedAddress({
+            programAddress: programId,
+            seeds: ['USER', getAddressEncoder().encode(other.address)],
+        });
+
+        const createResult = await sendInstruction(
+            {
+                programAddress: programId,
+                accounts: [
+                    { address: otherAccount, role: AccountRole.WRITABLE },
+                    { address: other.address, role: AccountRole.WRITABLE_SIGNER, signer: other },
+                    { address: SYSTEM_PROGRAM_ADDRESS, role: AccountRole.READONLY },
+                ],
+                data: createUserEncoder.encode({ discriminator: CREATE_DISCRIMINATOR, bump: otherBump, name: 'Jacob' }),
+            },
+            other,
+        );
+        assert(!(createResult instanceof FailedTransactionMetadata), `transaction failed: ${createResult.toString()}`);
+
+        const bogusProgram = (await generateKeyPairSigner()).address;
+        const result = await sendInstruction(
+            {
+                programAddress: programId,
+                accounts: [
+                    { address: otherAccount, role: AccountRole.WRITABLE },
+                    { address: other.address, role: AccountRole.WRITABLE_SIGNER, signer: other },
+                    { address: bogusProgram, role: AccountRole.READONLY },
+                ],
+                data: new Uint8Array([CLOSE_DISCRIMINATOR]),
+            },
+            other,
+        );
+        assert(result instanceof FailedTransactionMetadata, 'expected the bogus system program to be rejected');
+        assert.include(
+            result.err().toString(),
+            'IncorrectProgramId',
+            `expected the bogus system program account to be rejected, got: ${result.toString()}`,
+        );
+
+        const account = svm.getAccount(otherAccount);
+        assert(account.exists, 'expected the user account to be untouched');
+        assert.equal(account.programAddress, programId);
+        assert.equal(userNameDecoder.decode(account.data), 'Jacob');
+    });
+
     it('Close the account', async () => {
         const payerBalanceBefore = svm.getBalance(payer.address)!;
+        const accountBalanceBefore = svm.getBalance(userAccount)!;
+        assert(accountBalanceBefore > 0n, 'expected the user account to hold rent lamports');
 
         const ix = {
             programAddress: programId,
@@ -104,16 +158,32 @@ describe('Close Account!', () => {
         const result = await sendInstruction(ix);
         assert(!(result instanceof FailedTransactionMetadata), `transaction failed: ${result.toString()}`);
 
+        // Closing must drain every lamport back to the payer so the account
+        // is deleted by the runtime, not left as a rent-exempt empty shell.
         const account = svm.getAccount(userAccount);
-        assert(account.exists, 'expected account to still exist with zeroed data');
-        assert.equal(account.data.length, 0);
+        assert(!account.exists, 'expected the closed account to no longer exist');
+        assert.equal(svm.getBalance(userAccount) ?? 0n, 0n);
         assert.equal(
-            account.programAddress,
-            SYSTEM_PROGRAM_ADDRESS,
-            'expected account to be reassigned to the system program',
+            svm.getBalance(payer.address),
+            payerBalanceBefore + accountBalanceBefore - TX_FEE,
+            'expected the payer to receive every lamport from the closed account',
         );
+    });
 
-        const payerBalanceAfter = svm.getBalance(payer.address)!;
-        assert(payerBalanceAfter > payerBalanceBefore, 'expected payer to reclaim the rent lamports');
+    it('Re-create the account after closing it', async () => {
+        const ix = {
+            programAddress: programId,
+            accounts: keys,
+            data: createUserEncoder.encode({ discriminator: CREATE_DISCRIMINATOR, bump, name: 'Jacob' }),
+        };
+
+        svm.expireBlockhash();
+        const result = await sendInstruction(ix);
+        assert(!(result instanceof FailedTransactionMetadata), `transaction failed: ${result.toString()}`);
+
+        const account = svm.getAccount(userAccount);
+        assert(account.exists, 'expected the user account to be re-created');
+        assert.equal(account.programAddress, programId);
+        assert.equal(userNameDecoder.decode(account.data), 'Jacob');
     });
 });
