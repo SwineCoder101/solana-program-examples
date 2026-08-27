@@ -8,6 +8,7 @@ import {
     createMintToInstruction,
     createTransferCheckedWithTransferHookInstruction,
     ExtensionType,
+    getAccount,
     getAssociatedTokenAddressSync,
     getMintLen,
     TOKEN_2022_PROGRAM_ID,
@@ -65,7 +66,105 @@ describe('transfer-hook', () => {
         program.programId,
     );
 
-    const [counterPDA] = PublicKey.findProgramAddressSync([Buffer.from('counter')], program.programId);
+    // Per-mint transfer counter PDA
+    const [counterPDA] = PublicKey.findProgramAddressSync(
+        [Buffer.from('counter'), mint.publicKey.toBuffer()],
+        program.programId,
+    );
+
+    // Number of hook-gated transfers executed against `mint` so far
+    let transfersSoFar = 0;
+
+    async function transferWithHook(
+        mintPubkey: PublicKey,
+        source: PublicKey,
+        destination: PublicKey,
+        amount: bigint,
+    ): Promise<string> {
+        const ix = await createTransferCheckedWithTransferHookInstruction(
+            connection,
+            source,
+            mintPubkey,
+            destination,
+            wallet.publicKey,
+            amount,
+            decimals,
+            [],
+            'confirmed',
+            TOKEN_2022_PROGRAM_ID,
+        );
+        return sendAndConfirmTransaction(connection, new Transaction().add(ix), [wallet.payer], {
+            skipPreflight: true,
+            commitment: 'confirmed',
+        });
+    }
+
+    // Create a transfer-hook mint plus funded source / destination token accounts
+    async function createHookedMint(newMint: Keypair, recipientOwner: PublicKey) {
+        const mintLen = getMintLen([ExtensionType.TransferHook]);
+        const lamports = await connection.getMinimumBalanceForRentExemption(mintLen);
+        const source = getAssociatedTokenAddressSync(
+            newMint.publicKey,
+            wallet.publicKey,
+            false,
+            TOKEN_2022_PROGRAM_ID,
+            ASSOCIATED_TOKEN_PROGRAM_ID,
+        );
+        const destination = getAssociatedTokenAddressSync(
+            newMint.publicKey,
+            recipientOwner,
+            false,
+            TOKEN_2022_PROGRAM_ID,
+            ASSOCIATED_TOKEN_PROGRAM_ID,
+        );
+
+        const transaction = new Transaction().add(
+            SystemProgram.createAccount({
+                fromPubkey: wallet.publicKey,
+                newAccountPubkey: newMint.publicKey,
+                space: mintLen,
+                lamports,
+                programId: TOKEN_2022_PROGRAM_ID,
+            }),
+            createInitializeTransferHookInstruction(
+                newMint.publicKey,
+                wallet.publicKey,
+                program.programId,
+                TOKEN_2022_PROGRAM_ID,
+            ),
+            createInitializeMintInstruction(newMint.publicKey, decimals, wallet.publicKey, null, TOKEN_2022_PROGRAM_ID),
+            createAssociatedTokenAccountInstruction(
+                wallet.publicKey,
+                source,
+                wallet.publicKey,
+                newMint.publicKey,
+                TOKEN_2022_PROGRAM_ID,
+                ASSOCIATED_TOKEN_PROGRAM_ID,
+            ),
+            createAssociatedTokenAccountInstruction(
+                wallet.publicKey,
+                destination,
+                recipientOwner,
+                newMint.publicKey,
+                TOKEN_2022_PROGRAM_ID,
+                ASSOCIATED_TOKEN_PROGRAM_ID,
+            ),
+            createMintToInstruction(
+                newMint.publicKey,
+                source,
+                wallet.publicKey,
+                100 * 10 ** decimals,
+                [],
+                TOKEN_2022_PROGRAM_ID,
+            ),
+        );
+        await sendAndConfirmTransaction(connection, transaction, [wallet.payer, newMint], {
+            skipPreflight: true,
+            commitment: 'confirmed',
+        });
+
+        return { source, destination };
+    }
 
     it('Create Mint Account with Transfer Hook Extension', async () => {
         const extensions = [ExtensionType.TransferHook];
@@ -184,7 +283,52 @@ describe('transfer-hook', () => {
         const transaction = new Transaction().add(transferInstructionWithHelper);
 
         const txSig = await sendAndConfirmTransaction(connection, transaction, [wallet.payer], { skipPreflight: true });
+        transfersSoFar += 1;
         console.log('Transfer Signature:', txSig);
+    });
+
+    it('Counter PDA records every transfer', async () => {
+        const amount = BigInt(1 * 10 ** decimals);
+
+        for (let i = 0; i < 3; i++) {
+            await transferWithHook(mint.publicKey, sourceTokenAccount, destinationTokenAccount, amount);
+            transfersSoFar += 1;
+        }
+
+        const counterAccount = await program.account.counterAccount.fetch(counterPDA);
+        expect(counterAccount.counter.toNumber()).to.equal(transfersSoFar);
+    });
+
+    it('Set up the transfer hook for a second mint', async () => {
+        const secondMint = Keypair.generate();
+        const { source, destination } = await createHookedMint(secondMint, Keypair.generate().publicKey);
+
+        const initializeExtraAccountMetaListInstruction = await program.methods
+            .initializeExtraAccountMetaList()
+            .accounts({ mint: secondMint.publicKey })
+            .instruction();
+        const txSig = await sendAndConfirmTransaction(
+            connection,
+            new Transaction().add(initializeExtraAccountMetaListInstruction),
+            [wallet.payer],
+            { skipPreflight: true, commitment: 'confirmed' },
+        );
+        console.log('Second mint ExtraAccountMetaList Signature:', txSig);
+
+        await transferWithHook(secondMint.publicKey, source, destination, BigInt(1 * 10 ** decimals));
+
+        const destinationAccount = await getAccount(connection, destination, 'confirmed', TOKEN_2022_PROGRAM_ID);
+        expect(destinationAccount.amount).to.equal(BigInt(1 * 10 ** decimals));
+
+        // Each mint gets its own counter
+        const [secondCounterPDA] = PublicKey.findProgramAddressSync(
+            [Buffer.from('counter'), secondMint.publicKey.toBuffer()],
+            program.programId,
+        );
+        const secondCounter = await program.account.counterAccount.fetch(secondCounterPDA);
+        expect(secondCounter.counter.toNumber()).to.equal(1);
+        const firstCounter = await program.account.counterAccount.fetch(counterPDA);
+        expect(firstCounter.counter.toNumber()).to.equal(transfersSoFar);
     });
 
     it('Try call transfer hook without transfer', async () => {
