@@ -6,6 +6,7 @@ use anchor_spl::{
 
 use crate::{
     constants::{AUTHORITY_SEED, LIQUIDITY_SEED},
+    errors::TutorialError,
     state::{Amm, Pool},
 };
 
@@ -38,6 +39,7 @@ pub struct CreatePool<'info> {
             mint_b.key().as_ref(),
         ],
         bump,
+        constraint = mint_a.key() < mint_b.key() @ TutorialError::InvalidMint,
     )]
     pub pool: Box<Account<'info, Pool>>,
 

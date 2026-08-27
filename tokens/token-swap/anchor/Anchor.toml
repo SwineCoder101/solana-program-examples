@@ -6,6 +6,9 @@ solana_version = "3.1.8"
 resolution = true
 skip-lint = false
 
+[programs.localnet]
+swap_example = "UPxp2moQFWsGqfFd3ynqG2W9mj9CTjH68NN2bYUAqV1"
+
 [programs.devnet]
 swap_example = "AsGVFxWqEn8icRBFQApxJe68x3r9zvfSbmiEzYFATGYn"
 
