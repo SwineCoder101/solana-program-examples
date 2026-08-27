@@ -2,8 +2,9 @@ use anchor_lang::{prelude::*, solana_program::program::invoke, solana_program::s
 use anchor_spl::{
     token_2022::Token2022,
     token_interface::{
-        spl_token_metadata_interface::state::Field, token_metadata_initialize, token_metadata_update_field, Mint,
-        TokenMetadataInitialize, TokenMetadataUpdateField,
+        set_authority, spl_token_2022::instruction::AuthorityType, spl_token_metadata_interface::state::Field,
+        token_metadata_initialize, token_metadata_update_field, Mint, SetAuthority, TokenMetadataInitialize,
+        TokenMetadataUpdateField,
     },
 };
 
@@ -100,6 +101,16 @@ impl InitMint<'_> {
         let mut data = extra_metas_account.try_borrow_mut_data()?;
         ExtraAccountMetaList::init::<ExecuteInstruction>(&mut data, &metas)
             .map_err(|_| ProgramError::InvalidAccountData)?;
+
+        // the payer had to be mint authority to initialize the metadata; hand over now
+        if args.mint_authority != self.payer.key() {
+            let cpi_accounts = SetAuthority {
+                current_authority: self.payer.to_account_info(),
+                account_or_mint: self.mint.to_account_info(),
+            };
+            let cpi_ctx = CpiContext::new(self.token_program.key(), cpi_accounts);
+            set_authority(cpi_ctx, AuthorityType::MintTokens, Some(args.mint_authority))?;
+        }
 
         Ok(())
     }

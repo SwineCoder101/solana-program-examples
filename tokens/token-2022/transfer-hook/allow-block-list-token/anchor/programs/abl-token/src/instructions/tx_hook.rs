@@ -3,8 +3,11 @@ use std::str::FromStr;
 use anchor_lang::prelude::*;
 use anchor_spl::{
     token_2022::spl_token_2022::{
-        extension::{BaseStateWithExtensions, StateWithExtensions},
-        state::Mint,
+        extension::{
+            immutable_owner::ImmutableOwner, permanent_delegate::PermanentDelegate, BaseStateWithExtensions,
+            StateWithExtensions,
+        },
+        state::{Account as TokenAccount, Mint},
     },
     token_interface::spl_token_metadata_interface::state::TokenMetadata,
 };
@@ -35,12 +38,29 @@ impl TxHook<'_> {
         let mint_data = mint_info.data.borrow();
         let mint = StateWithExtensions::<Mint>::unpack(&mint_data)?;
 
+        // The lists are keyed on the token-account owner, which can be
+        // changed without invoking the hook unless the owner is immutable.
+        Self::require_immutable_owner(&self.source_token_account)?;
+        Self::require_immutable_owner(&self.destination_token_account)?;
+
         let metadata = mint.get_variable_len_extension::<TokenMetadata>()?;
         let decoded_mode = Self::decode_metadata(&metadata)?;
         let source_wallet_mode = Self::decode_wallet_mode(&self.source_ab_wallet)?;
         let destination_wallet_mode = Self::decode_wallet_mode(&self.destination_ab_wallet)?;
+        let authority_is_permanent_delegate = mint
+            .get_extension::<PermanentDelegate>()
+            .ok()
+            .and_then(|extension| Option::<Pubkey>::from(extension.delegate))
+            .is_some_and(|delegate| delegate == self.owner_delegate.key());
 
-        decide(decoded_mode, source_wallet_mode, destination_wallet_mode, amount)
+        decide(decoded_mode, source_wallet_mode, destination_wallet_mode, amount, authority_is_permanent_delegate)
+    }
+
+    fn require_immutable_owner(account: &UncheckedAccount) -> Result<()> {
+        let data = account.data.borrow();
+        let token_account = StateWithExtensions::<TokenAccount>::unpack(&data)?;
+        token_account.get_extension::<ImmutableOwner>().map_err(|_| ABListError::ImmutableOwnerRequired)?;
+        Ok(())
     }
 
     fn decode_wallet_mode(account: &UncheckedAccount) -> Result<DecodedWalletMode> {
@@ -100,7 +120,10 @@ impl TxHook<'_> {
 ///
 /// A wallet with an explicit `allowed: false` ABWallet record is blocked from
 /// transacting entirely - neither sending nor receiving - regardless of the
-/// mint's overall mode. This is checked first and applies to both sides.
+/// mint's overall mode. This is checked first and applies to both sides. The
+/// one exception is the mint's permanent delegate, which may still move
+/// tokens *out* of a blocked wallet (clawback); the destination rules apply
+/// to it like to anyone else.
 ///
 /// Beyond that, Allow/Threshold mode gate who may *receive* only, matching
 /// this program's documented semantics (see README): Force Allow requires
@@ -111,8 +134,12 @@ fn decide(
     source_wallet_mode: DecodedWalletMode,
     destination_wallet_mode: DecodedWalletMode,
     amount: u64,
+    authority_is_permanent_delegate: bool,
 ) -> Result<()> {
-    if source_wallet_mode == DecodedWalletMode::Block || destination_wallet_mode == DecodedWalletMode::Block {
+    if destination_wallet_mode == DecodedWalletMode::Block {
+        return Err(ABListError::WalletBlocked.into());
+    }
+    if source_wallet_mode == DecodedWalletMode::Block && !authority_is_permanent_delegate {
         return Err(ABListError::WalletBlocked.into());
     }
 
@@ -154,7 +181,7 @@ mod tests {
         // be allowed through, since only the destination was ever checked.
         for mint_mode in [DecodedMintMode::Allow, DecodedMintMode::Block, DecodedMintMode::Threshold(100)] {
             for destination_mode in [DecodedWalletMode::Allow, DecodedWalletMode::Block, DecodedWalletMode::None] {
-                let result = decide(mint_mode_clone(&mint_mode), DecodedWalletMode::Block, destination_mode, 0);
+                let result = decide(mint_mode_clone(&mint_mode), DecodedWalletMode::Block, destination_mode, 0, false);
                 assert!(
                     result.is_err(),
                     "expected a blocked source to be rejected regardless of mint mode / destination status"
@@ -168,13 +195,43 @@ mod tests {
         // Regression guard: this already worked before the fix, must keep working.
         for mint_mode in [DecodedMintMode::Allow, DecodedMintMode::Block, DecodedMintMode::Threshold(100)] {
             for source_mode in [DecodedWalletMode::Allow, DecodedWalletMode::Block, DecodedWalletMode::None] {
-                let result = decide(mint_mode_clone(&mint_mode), source_mode, DecodedWalletMode::Block, 0);
-                assert!(
-                    result.is_err(),
-                    "expected a blocked destination to be rejected regardless of mint mode / source status"
-                );
+                for is_permanent_delegate in [false, true] {
+                    let result = decide(
+                        mint_mode_clone(&mint_mode),
+                        mint_mode_clone_wallet(&source_mode),
+                        DecodedWalletMode::Block,
+                        0,
+                        is_permanent_delegate,
+                    );
+                    assert!(
+                        result.is_err(),
+                        "expected a blocked destination to be rejected regardless of mint mode / source status / authority"
+                    );
+                }
             }
         }
+    }
+
+    #[test]
+    fn permanent_delegate_may_claw_back_from_a_blocked_source() {
+        for mint_mode in [DecodedMintMode::Block, DecodedMintMode::Threshold(100)] {
+            let result = decide(mint_mode, DecodedWalletMode::Block, DecodedWalletMode::None, 0, true);
+            assert!(
+                result.is_ok(),
+                "expected the permanent delegate to be able to move tokens out of a blocked wallet"
+            );
+        }
+        let result = decide(DecodedMintMode::Allow, DecodedWalletMode::Block, DecodedWalletMode::Allow, 0, true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn permanent_delegate_is_still_subject_to_destination_rules() {
+        let result = decide(DecodedMintMode::Allow, DecodedWalletMode::Block, DecodedWalletMode::None, 0, true);
+        assert!(result.is_err(), "Allow mode must still require the destination to be allowed");
+        let result =
+            decide(DecodedMintMode::Threshold(100), DecodedWalletMode::Block, DecodedWalletMode::None, 100, true);
+        assert!(result.is_err(), "Threshold mode must still gate large transfers to unlisted destinations");
     }
 
     #[test]
@@ -182,37 +239,40 @@ mod tests {
         // The source is intentionally NOT gated in Allow mode - only "who may
         // receive" is documented/intended to be restricted. This is the
         // control case proving the fix doesn't over-correct.
-        let result = decide(DecodedMintMode::Allow, DecodedWalletMode::None, DecodedWalletMode::Allow, 0);
+        let result = decide(DecodedMintMode::Allow, DecodedWalletMode::None, DecodedWalletMode::Allow, 0, false);
         assert!(result.is_ok());
     }
 
     #[test]
     fn allow_mode_rejects_an_unlisted_destination() {
-        let result = decide(DecodedMintMode::Allow, DecodedWalletMode::None, DecodedWalletMode::None, 0);
+        let result = decide(DecodedMintMode::Allow, DecodedWalletMode::None, DecodedWalletMode::None, 0, false);
         assert!(result.is_err());
     }
 
     #[test]
     fn block_mode_allows_unlisted_wallets() {
-        let result = decide(DecodedMintMode::Block, DecodedWalletMode::None, DecodedWalletMode::None, 0);
+        let result = decide(DecodedMintMode::Block, DecodedWalletMode::None, DecodedWalletMode::None, 0, false);
         assert!(result.is_ok());
     }
 
     #[test]
     fn threshold_mode_allows_small_transfers_to_unlisted_destinations() {
-        let result = decide(DecodedMintMode::Threshold(100), DecodedWalletMode::None, DecodedWalletMode::None, 50);
+        let result =
+            decide(DecodedMintMode::Threshold(100), DecodedWalletMode::None, DecodedWalletMode::None, 50, false);
         assert!(result.is_ok());
     }
 
     #[test]
     fn threshold_mode_rejects_large_transfers_to_unlisted_destinations() {
-        let result = decide(DecodedMintMode::Threshold(100), DecodedWalletMode::None, DecodedWalletMode::None, 100);
+        let result =
+            decide(DecodedMintMode::Threshold(100), DecodedWalletMode::None, DecodedWalletMode::None, 100, false);
         assert!(result.is_err());
     }
 
     #[test]
     fn threshold_mode_allows_large_transfers_to_an_allowed_destination() {
-        let result = decide(DecodedMintMode::Threshold(100), DecodedWalletMode::None, DecodedWalletMode::Allow, 100);
+        let result =
+            decide(DecodedMintMode::Threshold(100), DecodedWalletMode::None, DecodedWalletMode::Allow, 100, false);
         assert!(result.is_ok());
     }
 
@@ -221,6 +281,14 @@ mod tests {
             DecodedMintMode::Allow => DecodedMintMode::Allow,
             DecodedMintMode::Block => DecodedMintMode::Block,
             DecodedMintMode::Threshold(t) => DecodedMintMode::Threshold(*t),
+        }
+    }
+
+    fn mint_mode_clone_wallet(mode: &DecodedWalletMode) -> DecodedWalletMode {
+        match mode {
+            DecodedWalletMode::Allow => DecodedWalletMode::Allow,
+            DecodedWalletMode::Block => DecodedWalletMode::Block,
+            DecodedWalletMode::None => DecodedWalletMode::None,
         }
     }
 }

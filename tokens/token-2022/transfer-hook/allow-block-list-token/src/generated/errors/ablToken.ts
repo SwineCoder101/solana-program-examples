@@ -24,9 +24,12 @@ export const ABL_TOKEN_ERROR__AMOUNT_NOT_ALLOWED = 0x1772; // 6002
 export const ABL_TOKEN_ERROR__WALLET_BLOCKED = 0x1773; // 6003
 /** MintNotUsingThisHook: Mint is not configured to use this transfer hook program */
 export const ABL_TOKEN_ERROR__MINT_NOT_USING_THIS_HOOK = 0x1774; // 6004
+/** ImmutableOwnerRequired: Token account must have the ImmutableOwner extension */
+export const ABL_TOKEN_ERROR__IMMUTABLE_OWNER_REQUIRED = 0x1775; // 6005
 
 export type AblTokenError =
     | typeof ABL_TOKEN_ERROR__AMOUNT_NOT_ALLOWED
+    | typeof ABL_TOKEN_ERROR__IMMUTABLE_OWNER_REQUIRED
     | typeof ABL_TOKEN_ERROR__INVALID_METADATA
     | typeof ABL_TOKEN_ERROR__MINT_NOT_USING_THIS_HOOK
     | typeof ABL_TOKEN_ERROR__WALLET_BLOCKED
@@ -36,6 +39,7 @@ let ablTokenErrorMessages: Record<AblTokenError, string> | undefined;
 if (process.env['NODE_ENV'] !== 'production') {
     ablTokenErrorMessages = {
         [ABL_TOKEN_ERROR__AMOUNT_NOT_ALLOWED]: `Amount not allowed`,
+        [ABL_TOKEN_ERROR__IMMUTABLE_OWNER_REQUIRED]: `Token account must have the ImmutableOwner extension`,
         [ABL_TOKEN_ERROR__INVALID_METADATA]: `Invalid metadata`,
         [ABL_TOKEN_ERROR__MINT_NOT_USING_THIS_HOOK]: `Mint is not configured to use this transfer hook program`,
         [ABL_TOKEN_ERROR__WALLET_BLOCKED]: `Wallet blocked`,

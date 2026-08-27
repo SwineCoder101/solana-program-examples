@@ -564,6 +564,11 @@
       "code": 6004,
       "name": "MintNotUsingThisHook",
       "msg": "Mint is not configured to use this transfer hook program"
+    },
+    {
+      "code": 6005,
+      "name": "ImmutableOwnerRequired",
+      "msg": "Token account must have the ImmutableOwner extension"
     }
   ],
   "types": [
