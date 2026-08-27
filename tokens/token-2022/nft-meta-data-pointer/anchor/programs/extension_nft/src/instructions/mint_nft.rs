@@ -184,7 +184,7 @@ pub struct MintNft<'info> {
     pub token_program: Program<'info, Token2022>,
     /// CHECK: We will create this one for the user
     #[account(mut)]
-    pub token_account: AccountInfo<'info>,
+    pub token_account: UncheckedAccount<'info>,
     #[account(mut)]
     pub mint: Signer<'info>,
     pub rent: Sysvar<'info, Rent>,
