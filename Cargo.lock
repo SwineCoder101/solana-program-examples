@@ -3036,6 +3036,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "secp256k1-anchor-program"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "solana-instructions-sysvar 3.0.0",
+ "solana-sdk-ids",
+]
+
+[[package]]
 name = "semver"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
