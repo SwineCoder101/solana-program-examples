@@ -35,7 +35,7 @@ pub fn init_rent_vault(program_id: &Pubkey, accounts: &[AccountInfo], args: Init
             rent_vault.key,
             lamports_required,
             0,
-            program_id,
+            &solana_system_interface::program::ID,
         ),
         &[payer.clone(), rent_vault.clone(), system_program.clone()],
         &[&[RentVault::SEED_PREFIX.as_bytes(), &[rent_vault_bump]]],
