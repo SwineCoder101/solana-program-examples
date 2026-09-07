@@ -49,6 +49,7 @@ members = [
     # cryptography
     "cryptography/bls12-381/pinocchio/program",
     "cryptography/bn254/pinocchio/program",
+    "cryptography/secp256k1/anchor/programs/ethereum-notes",
 
     # tokens
     "tokens/create-token/native/program",

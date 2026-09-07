@@ -1,0 +1,19 @@
+[toolchain]
+anchor_version = "1.0.2"
+solana_version = "3.1.8"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+ethereum_notes = "HbXqot4uVZsMozVm7Bp5pJsRsxmiMf4bzGEYQCSHv1VU"
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "pnpm mocha --import=tsx -t 1000000 tests/litesvm.test.ts"
+
+[hooks]
