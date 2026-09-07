@@ -322,7 +322,7 @@ Work with Metaplex compressed NFTs.
 
 ## Cryptography
 
-One program per curve. The BN254 and BLS12-381 examples are stateless wrappers over the raw cryptographic syscalls; they run in LiteSVM today but only work on public clusters once their feature gates activate. Applied examples (multisig, key registry, encrypted ballot) live in the [crypto-primitives-examples](https://github.com/solana-foundation/crypto-primitives-examples) reference repo.
+One stateless program per curve, wrapping the raw cryptographic syscalls or precompiles. The BN254 and BLS12-381 examples run in LiteSVM today but only work on public clusters once their feature gates activate. Applied examples (multisig, key registry, encrypted ballot) live in the [crypto-primitives-examples](https://github.com/solana-foundation/crypto-primitives-examples) reference repo.
 
 ### BN254 (alt_bn128) operations
 
@@ -336,9 +336,9 @@ Add, subtract, and scalar-multiply BLS12-381 G1 and G2 points with the `sol_curv
 
 [pinocchio](./cryptography/bls12-381/pinocchio)
 
-### secp256k1 Ethereum signature verification
+### secp256k1 (Ethereum) signature verification
 
-Let an Ethereum wallet be the authority over an account: the secp256k1 precompile verifies a `personal_sign` signature at the transaction level and the program reads the verified address and message back through the Instructions sysvar.
+Require a valid secp256k1 signature, such as MetaMask `personal_sign`, from a given Ethereum address. The precompile cannot be called via CPI, so the program reads the verified address and message back through the Instructions sysvar. Includes a React + Vite demo app.
 
 [anchor](./cryptography/secp256k1/anchor)
 

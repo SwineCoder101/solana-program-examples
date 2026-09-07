@@ -1,12 +1,12 @@
 [package]
-name = "ethereum-notes"
+name = "secp256k1-anchor-program"
 version = "0.1.0"
 description = "Created with Anchor"
 edition = "2021"
 
 [lib]
 crate-type = ["cdylib", "lib"]
-name = "ethereum_notes"
+name = "secp256k1_anchor_program"
 
 [features]
 default = []

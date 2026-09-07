@@ -1,76 +1,55 @@
-# Ethereum signature verification with the secp256k1 precompile (Anchor)
+# secp256k1 (Ethereum) signature verification (Anchor)
 
-Solana wallets sign with ed25519, Ethereum wallets with secp256k1. This example lets an Ethereum
-address be the only authority over an on-chain account: every create, edit and delete of a small
-`Note` is authorised by a MetaMask-style `personal_sign` signature, and no Solana keypair other
-than a fee payer is involved.
+Solana wallets sign with ed25519, Ethereum wallets with secp256k1. This example shows how an
+on-chain program can require a valid secp256k1 signature, such as a MetaMask `personal_sign`, from
+a specific Ethereum address.
 
 The runtime ships a secp256k1 native program for exactly this, but it is a _precompile_: it can
-only run as a top-level instruction and rejects cross-program invocation. So the pattern is
-instruction introspection rather than CPI:
+only run as a top-level instruction and rejects cross-program invocation. So the pattern is not
+CPI. It is two instructions in one transaction plus instruction introspection:
 
-1. The client puts a `Secp256k1Program` instruction first in the transaction, carrying the Ethereum
-   address, the signed message and the signature. If the signature does not recover to that
-   address the runtime rejects the whole transaction before any program runs.
-2. The note instruction comes second. It loads the previous instruction from the Instructions
-   sysvar, checks it really is the secp256k1 program, and reads the address and message back out of
-   the instruction data the runtime already verified.
+1. The client puts a `Secp256k1Program` instruction first, carrying the Ethereum address, the
+   signed message and the signature. If the signature does not recover to that address the runtime
+   rejects the whole transaction before any program runs.
+2. The program's `verify(eth_address, message)` instruction comes second. It loads the previous
+   instruction from the Instructions sysvar, checks it is the secp256k1 program, and checks the
+   address and message the runtime verified are the ones the caller expects.
 
 Nothing in the program is cryptographic. `verify_eth_signature` in
-[lib.rs](programs/ethereum-notes/src/lib.rs) is bookkeeping that ties the runtime's check to this
-note and this action. Compare with
-[external-delegate-token-master](../../../tokens/external-delegate-token-master/anchor), which
-uses the `secp256k1_recover` syscall inside the program instead.
+[lib.rs](programs/secp256k1-anchor-program/src/lib.rs) is bookkeeping that ties the runtime's
+check to your expectation, and it is written so you can lift it into your own program. Compare with
+[external-delegate-token-master](../../../tokens/external-delegate-token-master/anchor), which uses
+the `secp256k1_recover` syscall inside the program instead.
 
-## What gets signed
+## What the program checks
 
-The message is human readable so the user can see what they authorise in their wallet:
+| check                                                    | error                           |
+| -------------------------------------------------------- | ------------------------------- |
+| there is a previous instruction and it is the precompile | `MissingSignatureInstruction`   |
+| it carries exactly one signature                         | `MalformedSignatureInstruction` |
+| all of its offsets point inside its own instruction data | `MalformedSignatureInstruction` |
+| the verified address equals `eth_address`                | `WrongSigner`                   |
+| the verified message equals `message`                    | `MessageMismatch`               |
 
-```
-Solana note
-program: <program id>
-note: <note address>
-action: create | edit | delete
-nonce: <note nonce>
-content: <content>          (create and edit only)
-```
+The offsets check is the subtle one. A precompile instruction's offsets may point at _any_
+instruction in the transaction, and the runtime verifies whatever they point at. A program that
+read the address out of the precompile instruction's own bytes without checking the offsets could
+be handed a decoy: the last test constructs exactly that transaction and shows the runtime accepts
+it while the program does not.
 
-The program rebuilds this text, wraps it in the EIP-191 prefix that `personal_sign` adds
-(`"\x19Ethereum Signed Message:\n" + length`), and compares byte for byte with the message the
-precompile verified. Binding the program id, the note address and a nonce that increments on every
-accepted action means a signature is valid for one action on one note, once.
-
-## Accounts and checks
-
-`Note` is a PDA at `["note", eth_address]`, one per Ethereum address.
-
-| field         | purpose                                                            |
-| ------------- | ------------------------------------------------------------------ |
-| `eth_address` | the only authority over the note                                   |
-| `rent_payer`  | Solana account that funded the note; receives the rent on `delete` |
-| `nonce`       | replay protection, incremented on every accepted action            |
-| `content`     | up to 200 bytes                                                    |
-
-| instruction | authority check                                           | state transition                 | value movement                     |
-| ----------- | --------------------------------------------------------- | -------------------------------- | ---------------------------------- |
-| `create`    | signature from `eth_address` over nonce 0 and the content | `init` note, `nonce = 1`         | `payer` funds rent                 |
-| `edit`      | signature from `note.eth_address` over `note.nonce`       | `content` replaced, `nonce += 1` | none                               |
-| `delete`    | signature from `note.eth_address` over `note.nonce`       | account closed                   | rent returned to `note.rent_payer` |
-
-The `instructions_sysvar` account is pinned with an `address` constraint. The precompile
-instruction must be immediately before the note instruction, must carry exactly one signature, and
-all of its offsets must point inside its own data, so the program cannot be tricked into reading an
-address or message from some other instruction.
+`personal_sign` wraps the text in the EIP-191 prefix (`"\x19Ethereum Signed Message:\n" + length`)
+before hashing, so the `message` bytes are the prefixed form. The tests and the demo app build them
+the same way.
 
 ## Threat model notes
 
-- The fee payer is trusted for nothing but fees. It cannot forge an action because it does not hold
-  the Ethereum key. This is what makes a gasless relayer safe here.
-- A `create` signature could be replayed to recreate a deleted note with its original content,
-  because the nonce lives in the account that `delete` closes. Keep the nonce in a persistent
-  per-address account if that matters for your use case.
-- Ethereum wallets show `personal_sign` messages to the user; the message deliberately includes the
-  program id and note address so a signature requested by one dapp cannot be used by another.
+- The program is stateless. Binding the message to what it authorises (program id, accounts,
+  amounts, a nonce) is the caller's job; a bare "Sign in" message can be replayed by anyone who saw
+  it. The [external-delegate-token-master](../../../tokens/external-delegate-token-master/anchor)
+  example shows a nonce-bound digest.
+- The fee payer is trusted for nothing but fees. It cannot forge the Ethereum signature.
+- Solana's precompile signature check costs a signature fee, so each verified message adds one
+  signature's worth of lamports to the transaction fee.
 
 ## Test
 
@@ -82,5 +61,18 @@ anchor build
 pnpm test          # mocha + LiteSVM, no validator needed
 ```
 
-The tests sign with a throwaway secp256k1 key and cover the happy path plus the rejections: no
-precompile instruction, wrong signer, stale nonce, tampered content, and the rent refund on delete.
+## Demo app (React + Vite + MetaMask)
+
+`app/` is a small page that signs a message with MetaMask and sends the two-instruction
+transaction from a throwaway fee payer it keeps in localStorage, so no Solana wallet is needed.
+Point it at a local validator with the program deployed:
+
+```sh
+solana-test-validator --reset            # or surfpool start
+anchor deploy                            # localnet, uses the keypair from `anchor keys sync`
+cd app && pnpm install && pnpm dev       # open http://localhost:5173
+```
+
+Paste the program id from `anchor keys sync` (or set `VITE_PROGRAM_ID`), airdrop to the fee payer,
+connect MetaMask, and send. The "expect a different message" checkbox shows the rejection path:
+the precompile passes but the program returns `MessageMismatch`.

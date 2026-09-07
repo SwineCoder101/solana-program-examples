@@ -11,5 +11,6 @@
         "allowImportingTsExtensions": true,
         "noEmit": true,
         "skipLibCheck": true
-    }
+    },
+    "include": ["tests/**/*.ts"]
 }

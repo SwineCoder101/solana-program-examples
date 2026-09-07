@@ -1,6 +1,6 @@
 {
   "type": "module",
-  "name": "ethereum-notes",
+  "name": "secp256k1-anchor",
   "version": "1.0.0",
   "license": "MIT",
   "scripts": {

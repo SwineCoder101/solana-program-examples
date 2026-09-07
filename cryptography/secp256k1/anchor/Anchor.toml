@@ -7,7 +7,7 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-ethereum_notes = "HbXqot4uVZsMozVm7Bp5pJsRsxmiMf4bzGEYQCSHv1VU"
+secp256k1_anchor_program = "G7SyMsDAgVFFzQoLx6VsG8vaufuYvxmyfvFeHQbKXe1T"
 
 [provider]
 cluster = "localnet"
